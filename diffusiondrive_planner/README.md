@@ -8,6 +8,110 @@ Reference: https://github.com/hustvl/DiffusionDrive — **two branches, two diff
 | `nusc`  | SparseDrive | ResNet-50 | L2 0.27/0.54/0.90m (avg 0.57), collision 0.03/0.05/0.16% (avg 0.08) |
 | `main`  | Transfuser/NAVSIM | ResNet-34, 60M | 88.1 PDMS on navtest |
 
+A vanilla diffusion planner starts from Gaussian noise at t=999 and denoises ~100 steps.
+DiffusionDrive starts from **anchor trajectories plus a little noise** and denoises **2 steps**
+inside a truncated schedule. That is the whole "10× fewer denoising steps" claim — not
+distillation, just a far better starting point.
+
+## Visualization
+
+![DiffusionDrive on nuScenes scene-0916](assets/demo_scene-0916.gif)
+
+**Full-resolution video:** [scene-0916](assets/demo_scene-0916.mp4) (1920×1080, 20 s) ·
+[scene-0103](assets/demo_scene-0103.mp4) · [full-res still](assets/demo_scene-0916_still.png)
+
+`CAM_FRONT` carries the plan re-projected onto the road as the ego's swept corridor, alongside
+the five remaining cameras and a BEV with the online map, tracked agents and their forecasts.
+The plan is drawn in the three layers that make the truncated-diffusion story visible: the
+command-selected kmeans **anchors** the denoiser is seeded from, the six **denoised modes**
+shaded by confidence, and the **top-1** mode the controller follows. Colours follow the paper's
+own legend (`autumn` top-1, `winter` other modes).
+
+Three sources are kept visually distinct, because conflating them would claim more than the
+model does:
+
+| | shown as | what it is |
+|---|---|---|
+| **planned** | orange | derived from `final_planning` — DiffusionDrive's 3 s trajectory |
+| **measured** | cyan | nuScenes CAN bus / IMU: what the human driver actually did |
+| **nav command** | green | `gt_ego_fut_cmd`, the route command fed *into* the planner |
+
+The model outputs a path, not actuator commands, so steering / throttle / brake come from a
+pure-pursuit + PI controller closed around that path ([tools/demo_control.py](tools/demo_control.py),
+unit-tested in [tests/test_demo_control.py](tests/test_demo_control.py)). The steering ratio
+is not a spec-sheet number — it is fit per scene from the CAN yaw rate and speed, and comes
+out at **15.5:1** on scene-0916, which is right for the Renault Zoe that nuScenes drives.
+Action labels are the nav command plus a manoeuvre (lateral × longitudinal) read off the plan's
+own geometry.
+
+Gauges redraw every output frame against the ~100 Hz `steeranglefeedback` / `ms_imu`
+channels, while the cameras and BEV step at the planner's 2 Hz — so the video shows the rate
+gap rather than hiding it.
+
+Known and expected: at low speed the 3 s plan is only ~6 m long, which is shorter than the
+near-field the front camera can see, so the corridor shrinks to a sliver at the bottom of
+`CAM_FRONT`. The BEV still shows the whole plan.
+
+## Metric results
+
+Open-loop planning on nuScenes **mini_val**, scored with **upstream's own `PlanningMetric`**
+rather than a reimplementation, so the numbers are comparable to the paper by construction.
+
+| L2 (m) ↓ | 1.0 s | 2.0 s | 3.0 s | avg |
+|---|---|---|---|---|
+| **ours** — mini_val, 69 scored samples | **0.2433** | **0.5490** | **0.9603** | **0.5842** |
+| paper — full val | 0.27 | 0.54 | 0.90 | 0.57 |
+
+**Within 2.5 % of the published average on ~10× fewer samples**, and 2 s is nearly exact.
+
+Collision is 0.161 % vs the paper's 0.08 %, which is **not meaningful at n=69** — the entire
+figure is one event in the 3 s bucket, where a single collision is worth ~0.5 pp. L2 is the
+signal here; collision is noise at this sample size.
+
+Per scene, the two mini_val scenes behave very differently:
+
+| scene | L2 1 s / 2 s / 3 s | character |
+|---|---|---|
+| `scene-0916` | **0.145 / 0.323 / 0.560** | parking lot; full steering range (−273°→+251°), all three nav commands |
+| `scene-0103` | 0.343 / 0.780 / 1.371 | decelerates 8.9→1.8 m/s for a turning car; carries nearly all the error |
+| mini_val | 0.243 / 0.549 / 0.960 | the 69 fully-scored samples |
+
+`scene-0103` is where the planner under-predicts a hard brake — visible as a spike in the
+video's L2 trace.
+
+L2 here is upstream's `PlanningMetric` definition — mean per-step displacement up to the
+horizon, with samples whose 3 s future is unlogged dropped, **not** the endpoint error. The
+number rendered on the video reproduces `eval_planning.py` to 1e-4, so it is the same number as
+the table above.
+
+## Fidelity chain
+
+Each step is checked independently, so a failure localises instead of showing up as a bad metric:
+
+| what | result |
+|---|---|
+| official `diffusiondrive_nusc_stage2.pth` → ported planner | **0 missing / 0 unexpected**, 128/128 tensors, no shape mismatches |
+| our `_run_block` vs upstream's 22-slot loop, real sample, official weights | `plan_reg` **0.000e+00** · `plan_cls` **0.000e+00** — exact, not a tolerance |
+| our `TruncatedDDIM` vs `diffusers.DDIMScheduler` | agree to **1e-6** (21 tests) |
+| our `TruncatedDDIM` swapped into the real head, scored | L2 avg **0.5834** vs 0.5842 — below the run-to-run spread of the unseeded noise draw |
+| `dfa_torch` vs the real CUDA kernel, Tesla T4 | max abs diff **4.578e-05** |
+
+The mini_val run exercises `dfa_torch` and `attention_compat` throughout the detection, map and
+motion heads, so the metric confirms both end to end — not just the planner.
+
+## What is actually ported
+
+The adaptation layer is deliberately thin:
+
+| file | what it replaces |
+|---|---|
+| `truncated_diffusion.py` | the DDIM schedule, asymmetric normalisation, delta↔waypoint conversion |
+| `plan_query.py` | anchor query bank (3 commands × 6 kmeans anchors), trajectory + time embeddings |
+| `traj_pooler.py` | deformable aggregation **along the trajectory** — what makes the denoiser image-aware |
+| `diff_head.py`, `ffn.py`, `diff_planner.py` | `diff_refine` + FiLM modulation + the ×2 `diff_operation_order` loop |
+| `dfa_torch.py` | the `deformable_aggregation_ext` CUDA kernel, in pure PyTorch |
+| `attention_compat.py` | `MultiheadFlashAttention` → SDPA, state-dict compatible so the checkpoint still loads 0/0 |
+
 ## Why this is first
 
 The `nusc` branch is SparseDrive plus essentially one new file,
@@ -143,48 +247,10 @@ this is a pure rendering pass: ~70 s on the Mac, CPU only, no checkpoint forward
 `--results planning_results_ours.pt` renders our `TruncatedDDIM`;
 `planning_results.pt` renders upstream's scheduler.
 
-Panels: `CAM_FRONT` with the plan re-projected onto the road as the ego's swept corridor,
-the five remaining cameras, a BEV with the online map / tracked agents / their forecasts,
-and the plan drawn in the three layers that make the truncated-diffusion story visible —
-the command-selected kmeans **anchors** the denoiser is seeded from, the six **denoised
-modes** shaded by confidence, and the **top-1** mode the controller follows. Colours follow
-the paper's own legend (`autumn` top-1, `winter` other modes).
-
-Three sources are kept visually distinct, because conflating them would claim more than the
-model does:
-
-| | shown as | what it is |
-|---|---|---|
-| **planned** | orange | derived from `final_planning` — DiffusionDrive's 3 s trajectory |
-| **measured** | cyan | nuScenes CAN bus / IMU: what the human driver actually did |
-| **nav command** | green | `gt_ego_fut_cmd`, the route command fed *into* the planner |
-
-The model outputs a path, not actuator commands, so steering / throttle / brake come from a
-pure-pursuit + PI controller closed around that path ([tools/demo_control.py](tools/demo_control.py),
-unit-tested in [tests/test_demo_control.py](tests/test_demo_control.py)). The steering ratio
-is not a spec-sheet number — it is fit per scene from the CAN yaw rate and speed, and comes
-out at **15.5:1** on scene-0916, which is right for a Renault Zoe. Action labels are the nav
-command plus a manoeuvre (lateral × longitudinal) read off the plan's own geometry.
-
-Gauges redraw every output frame against the ~100 Hz `steeranglefeedback` / `ms_imu`
-channels, while the cameras and BEV step at the planner's 2 Hz — so the video shows the rate
-gap rather than hiding it.
-
-| scene | L2 1s / 2s / 3s | why it is worth watching |
-|---|---|---|
-| `scene-0916` | **0.145 / 0.323 / 0.560 m** | parking lot; sweeps the full steering range (−273°→+251°) and exercises all three nav commands |
-| `scene-0103` | 0.343 / 0.780 / 1.371 m | decelerates 8.9→1.8 m/s for a turning car; carries nearly all of mini_val's error |
-| mini_val | 0.243 / 0.549 / 0.960 m | the 69 fully-scored samples, matching `eval_planning.py` |
-
-L2 here is upstream's `PlanningMetric` definition — mean per-step displacement up to the
-horizon, with samples whose 3 s future is unlogged dropped, not the endpoint error. It
-reproduces `eval_planning.py` to 1e-4, so the number on screen is the same number in the
-table above. Four frame/format traps that had to be settled first (including one that
-silently blanked the road overlay on scene-0103) are in `bug_log.txt`.
-
-Known and expected: at low speed the 3 s plan is only ~6 m long, which is shorter than the
-near-field the front camera can see, so the corridor shrinks to a sliver at the bottom of
-`CAM_FRONT`. The BEV still shows the whole plan.
+What each panel shows, and where its numbers come from, is described under
+[Visualization](#visualization). Four frame/format traps had to be settled before any of it
+was trustworthy — including one that silently blanked the road overlay on scene-0103 — and
+they are written up in `bug_log.txt`.
 
 ## Stage 2 — NAVSIM 
 
