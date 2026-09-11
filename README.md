@@ -41,7 +41,7 @@ upstream's own `PlanningMetric`, with the official checkpoint loading 0 missing 
 | **DiffusionDrive** — nuScenes | **done** — reproduced | published L2 avg 0.57 |
 | DiffusionDrive — NAVSIM | next | 88.1 PDMS on navtest; 60M/ResNet-34, the one model that trains end-to-end on a 16 GB T4 |
 | GR00T N1.6-3B | checkpoint loads 0/0/0 (3.29 B params) | LIBERO / SimplerEnv success rate |
-| DiffusionVLA | ScaleDP head loads 0-unexpected | **no official VLA weights exist** — controlled baseline against GR00T |
+| DexVLA | ScaleDP-H Stage-1 head loads 0-unexpected | **only Stage 1 is released and eval is real-robot only** — controlled baseline against GR00T, not a reproduction |
 | DROID-SLAM | `droid.pth` loads 0/0/0 | ATE on TUM-RGBD monocular |
 | ROS2 bridge | built, wire format byte-identical to upstream | live `/vla/joint_trajectory` |
 
