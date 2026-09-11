@@ -26,13 +26,10 @@ can be re-pulled and diffed. Each project keeps its own `README.md` and `bug_log
 
 ### [DiffusionDrive](diffusiondrive_planner/) — truncated diffusion planner (CVPR 2025 Highlight)
 
-A vanilla diffusion planner starts from Gaussian noise at t=999 and denoises ~100 steps.
-DiffusionDrive starts from **anchor trajectories plus a little noise** and denoises **2 steps**
-inside a truncated schedule. That is the whole "10× fewer denoising steps" claim — not
-distillation, just a far better starting point.
+Denoises a driving trajectory in **2 steps**, seeded from anchor trajectories plus a little
+noise, rather than ~100 steps from Gaussian noise. Reproduced on nuScenes mini_val against
+upstream's own `PlanningMetric`, with the official checkpoint loading 0 missing / 0 unexpected.
 
-Reproduced on nuScenes mini_val against upstream's own `PlanningMetric`, with the official
-checkpoint loading 0 missing / 0 unexpected.
 **→ [Visualization, metric results and the full fidelity chain](diffusiondrive_planner/)**
 
 ---
@@ -48,10 +45,15 @@ checkpoint loading 0 missing / 0 unexpected.
 | DROID-SLAM | `droid.pth` loads 0/0/0 | ATE on TUM-RGBD monocular |
 | ROS2 bridge | built, wire format byte-identical to upstream | live `/vla/joint_trajectory` |
 
-Projects land in this repo as they clear the 0/0 + reproduce-the-metric bar. DiffusionDrive is
-first because it is the cheapest: its `nusc` branch is a planner-head swap on
-[SparseDrive](https://github.com/Trish32/VLM-AD-Project/tree/main/sparse4d_vldrive), which was
-already ported and metric-validated in the sibling repo.
+Projects land in this repo as they clear the 0/0 + reproduce-the-metric bar.
+
+DiffusionDrive is first because it is the cheapest. Its `nusc` branch is SparseDrive plus
+essentially one new file — `motion_planning_head_v13.py`, the truncated-diffusion planner that
+replaces the regression planner. Everything upstream of it (sparse perception, instance bank,
+motion head) is SparseDrive, which is
+**[already ported and metric-validated](https://github.com/Trish32/VLM-AD-Project/tree/main/sparse4d_vldrive)**
+in the sibling repo. That makes it a planner-head swap on working code rather than a
+from-scratch port.
 
 ## License
 

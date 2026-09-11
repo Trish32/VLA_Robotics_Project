@@ -112,17 +112,8 @@ The adaptation layer is deliberately thin:
 | `dfa_torch.py` | the `deformable_aggregation_ext` CUDA kernel, in pure PyTorch |
 | `attention_compat.py` | `MultiheadFlashAttention` → SDPA, state-dict compatible so the checkpoint still loads 0/0 |
 
-## Why this is first
 
-The `nusc` branch is SparseDrive plus essentially one new file,
-`projects/mmdet3d_plugin/models/motion/motion_planning_head_v13.py` — the truncated-diffusion
-planner that replaces the regression planner. Everything upstream of it (sparse perception,
-instance bank, motion head) is SparseDrive, which is **already ported to pure PyTorch** at
-`~/VLMProjects/sparse4d_vldrive/sparse4d_vl/model/motion_planning.py`.
-
-So stage 1 is a planner-head swap on working, metric-validated code, not a from-scratch port.
-
-## Local setup — DONE (2026-08-16)
+## Local setup
 
 Both branches cloned and pinned (`upstream` = main/NAVSIM 9b52ed0, `upstream-nusc` =
 nusc ae54fd8, as a git worktree sharing objects). The nusc plugin **imports and unit-tests
@@ -157,7 +148,7 @@ over three tiny cases plus one realistic 900×13×256 case. It also patches
 `#include <THC/THCAtomics.cuh>` → `<ATen/cuda/Atomic.cuh>`, since THC was removed in
 PyTorch 1.11 and upstream's source predates that.
 
-## Stage 1 — nuScenes (days 1-3)
+## Stage 1 — nuScenes
 
 Port target: `EgoPlanner` -> truncated-diffusion planner. Full spec in **[DESIGN.md](DESIGN.md)**.
 
@@ -212,7 +203,7 @@ Port target: `EgoPlanner` -> truncated-diffusion planner. Full spec in **[DESIGN
       scheduler, collision identical. The 0.0008 gap is below the run-to-run spread from
       the unseeded noise draw (0.5816–0.5842 observed), so the outer denoising loop —
       the one part `compare_planner.py` deliberately excluded — is confirmed in situ.
-      **Week 1 is closed.**
+      
 
 Get the checkpoint with:
 ```bash
