@@ -1,0 +1,75 @@
+diff --git a/qwen2_vla/models/modeling_qwen2_vla.py b/qwen2_vla/models/modeling_qwen2_vla.py
+index e47fe3d..098f291 100644
+--- a/qwen2_vla/models/modeling_qwen2_vla.py
++++ b/qwen2_vla/models/modeling_qwen2_vla.py
+@@ -430,7 +430,11 @@ class Qwen2VLVisionBlock(nn.Module):
+ 
+     def forward(self, hidden_states, cu_seqlens, rotary_pos_emb) -> torch.Tensor:
+         hidden_states = hidden_states + self.attn(
+-            self.norm1(hidden_states).to(torch.bfloat16), cu_seqlens=cu_seqlens, rotary_pos_emb=rotary_pos_emb
++            # Was `.to(torch.bfloat16)`, an unconditional cast that contradicts the
++            # surrounding weights whenever the tower is not loaded in bf16 -- fp32
++            # on CPU, fp16 on a T4. The LayerNorm already returns the module's own
++            # dtype, so dropping the cast is a no-op on the bf16 path.
++            self.norm1(hidden_states), cu_seqlens=cu_seqlens, rotary_pos_emb=rotary_pos_emb
+         )
+         hidden_states = hidden_states + self.mlp(self.norm2(hidden_states))
+         return hidden_states
+@@ -1719,18 +1723,22 @@ class Qwen2VLForConditionalGenerationForVLA(Qwen2VLPreTrainedModel, GenerationMi
+         "The image shows a street scene with a red stop sign in the foreground. In the background, there is a large red gate with Chinese characters ..."
+         ```"""
+ 
+-        self.computed_type = torch.bfloat16
+-        input_ids=input_ids.to("cuda")
+-        attention_mask=attention_mask.to("cuda")
++        # Was hardcoded to torch.bfloat16, which mismatches the weights whenever the
++        # model is loaded in any other dtype (fp32 on CPU, fp16 on a T4 -- sm_75 has
++        # no bf16). `self.dtype` is the dtype of the model's own parameters, so this
++        # is a no-op for the bf16-on-CUDA path upstream targets.
++        self.computed_type = self.dtype
++        input_ids = input_ids.to(self.device)
++        attention_mask = attention_mask.to(self.device)
+         if not is_eval:
+-            labels = labels.to("cuda")
+-            actions = actions.to(dtype=self.computed_type, device='cuda')
+-            states = states.to(dtype=self.computed_type, device='cuda')
++            labels = labels.to(self.device)
++            actions = actions.to(dtype=self.computed_type, device=self.device)
++            states = states.to(dtype=self.computed_type, device=self.device)
+             position_ids, rope_deltas = self.get_rope_index(
+                 input_ids, image_grid_thw, video_grid_thw, attention_mask
+             )
+         if pixel_values is not None:
+-            pixel_values = pixel_values.to(dtype=self.computed_type, device='cuda')
++            pixel_values = pixel_values.to(dtype=self.computed_type, device=self.device)
+         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+         output_hidden_states = (
+             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+@@ -1843,7 +1851,8 @@ class Qwen2VLForConditionalGenerationForVLA(Qwen2VLPreTrainedModel, GenerationMi
+             output = (logits,) + outputs[1:]
+             return (loss,) + output if loss is not None else output
+ 
+-        torch.cuda.empty_cache()
++        if torch.cuda.is_available():
++            torch.cuda.empty_cache()
+         gc.collect()
+         del input_ids
+         del attention_mask
+@@ -1990,7 +1999,7 @@ class Qwen2VLForConditionalGenerationForVLA(Qwen2VLPreTrainedModel, GenerationMi
+                  attention_mask=None,
+                  image_grid_thw=None,
+                  ):
+-        input_ids = input_ids.to('cuda')
++        input_ids = input_ids.to(self.device)
+         with torch.inference_mode():
+             outputs = self.generate(
+                 input_ids,
+@@ -2046,7 +2055,7 @@ class Qwen2VLForConditionalGenerationForVLA(Qwen2VLPreTrainedModel, GenerationMi
+                  attention_mask=None,
+                  image_grid_thw=None,
+                  ):
+-        input_ids = input_ids.to('cuda')
++        input_ids = input_ids.to(self.device)
+         with torch.inference_mode():
+             all_hidden_states = self.forward(input_ids,
+                 pixel_values=pixel_values,

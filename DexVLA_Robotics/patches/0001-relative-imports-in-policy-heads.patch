@@ -1,0 +1,26 @@
+diff --git a/policy_heads/__init__.py b/policy_heads/__init__.py
+index 9cdf7f1..02fdff2 100644
+--- a/policy_heads/__init__.py
++++ b/policy_heads/__init__.py
+@@ -1,6 +1,14 @@
+-from models.transformer_diffusion.modeling_scaledp import *
+-from models.transformer_diffusion.configuration_scaledp import *
+-from models.unet_diffusion.modeling_unet_diffusion import *
+-from models.unet_diffusion.configuration_unet_diffusion import *
+-
+-# import
+\ No newline at end of file
++# PATCH: these four were absolute imports of a TOP-LEVEL package named `models`
++# (`from models.transformer_diffusion... import *`). That only resolves if
++# `policy_heads/` itself is on sys.path, and it claims the generic name `models`
++# globally -- which collides with anything else in the process that has a `models`
++# package. `pip install -e policy_heads` does not fix it either: `policy_heads/models/`
++# has no __init__.py, so setuptools' find_packages() never sees it.
++#
++# Relative imports resolve through the implicit namespace package without needing
++# __init__.py files and without taking a global name.
++from .models.transformer_diffusion.modeling_scaledp import *  # noqa: F401,F403
++from .models.transformer_diffusion.configuration_scaledp import *  # noqa: F401,F403
++from .models.unet_diffusion.modeling_unet_diffusion import *  # noqa: F401,F403
++from .models.unet_diffusion.configuration_unet_diffusion import *  # noqa: F401,F403
++# /PATCH

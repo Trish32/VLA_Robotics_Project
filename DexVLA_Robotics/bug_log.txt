@@ -1,0 +1,284 @@
+DiffusionVLA / DexVLA — bug log
+===============================
+Upstream pinned at fc21a82. Env: conda `divla_vl` (py3.10, torch 2.4.1,
+transformers 4.45.2, timm 0.9.10) — separate from `groot_vl` because the pins conflict.
+
+
+[1] requirements.txt pins an impossible torch/torchvision pair
+---------------------------------------------------------------
+Date:        2026-08-19
+Cause:       `torch==2.4.1` with `torchvision==0.15.2`. torchvision 0.15.2 pairs with
+             torch 2.0.x; installing both either fails to resolve or silently pulls a
+             different torch.
+Fix:         Installed torchvision 0.19.1, the correct partner for torch 2.4.1. Recorded
+             rather than silently corrected, because anyone following the repo's own
+             README will hit it.
+
+
+[2] diffusers 0.39 x torch 2.4.1 — custom-op schema inference fails at import
+------------------------------------------------------------------------------
+Date:        2026-08-19
+Fingerprint: RuntimeError: Failed to import diffusers.models.unets.unet_2d_condition
+             ... ValueError: infer_schema(func): Parameter q has unsupported type
+             torch.Tensor ... Got func with signature (q: 'torch.Tensor', ...,
+             softmax_scale: 'float | None' = None, ...)
+Cause:       Installing an unpinned (latest) diffusers alongside torch 2.4.1. diffusers
+             registers a flash-attention custom op whose annotations use PEP-604
+             `X | None` syntax as *strings*; torch 2.4's `infer_schema` cannot parse them.
+Fix:         `diffusers==0.11.1`, which is what requirements.txt actually pins. Lesson:
+             install the pinned version FIRST; "latest, it'll be fine" cost a debug cycle.
+
+
+[3] `cached_download` removed from huggingface_hub >= 0.26
+-----------------------------------------------------------
+Date:        2026-08-19
+Fingerprint: ImportError: cannot import name 'cached_download' from 'huggingface_hub'
+Cause:       diffusers 0.11.1 imports `cached_download`, deleted in hub 0.26.
+Fix:         `huggingface_hub==0.25.2`.
+Note:        **This is the identical blocker hit in week 1 on DiffusionDrive** (see
+             diffusiondrive_planner/bug_log.txt). Two unrelated 2024-era repos, same failure.
+             Any repo pinning diffusers < ~0.27 needs hub < 0.26.
+
+
+[4] policy_heads/__init__.py imports a TOP-LEVEL package named `models`
+------------------------------------------------------------------------
+Date:        2026-08-19
+Fingerprint: ModuleNotFoundError: No module named 'models'
+Cause:       `from models.transformer_diffusion.modeling_scaledp import *`. That resolves
+             only if `policy_heads/` itself is on sys.path, and it claims the generic
+             global name `models`, which collides with any other package of that name in
+             the process. `pip install -e policy_heads` does NOT fix it:
+             `policy_heads/models/` has no `__init__.py`, so setuptools' find_packages()
+             never sees it.
+Fix:         Rewrote the four imports as relative (`from .models...`). Implicit namespace
+             packages resolve them without needing `__init__.py` and without taking a
+             global name. Captured in patches/.
+
+
+[5] MODEL_STRUCTURE and ScaleDP_models disagree on the size keys
+------------------------------------------------------------------
+Date:        2026-08-19
+Fingerprint: KeyError: 'ScaleDP-H'
+Cause:       `configuration_scaledp.MODEL_STRUCTURE` is keyed `ScaleDP_H` / `ScaleDP_L`
+             (underscore); `modeling_scaledp.ScaleDP_models` is keyed `ScaleDP-H` /
+             `ScaleDP-L` (hyphen). Whichever spelling you read first is wrong for the
+             other file.
+Fix:         Config path takes the underscore form. Not patched — it is upstream's public
+             API surface; our tool documents it instead.
+
+
+VERIFIED MILESTONES
+-------------------
+2026-08-19  Package imports cleanly on Mac (policy_heads, qwen2_vla.models.modeling_qwen2_vla,
+            model_load_utils) in the `DexVLA_Robotics` env, no CUDA, no flash-attn.
+
+2026-08-19  **`lesjie/scale_dp_h` loads with 0 unexpected / 0 shape mismatch** against
+            upstream's own `ScaleDP` class — 327/339 tensors, 0.950B params
+            (tools/load_scaledp.py). Every checkpoint tensor maps onto the model, so the
+            architecture reconstruction is confirmed.
+            The 12 "missing" are exactly the embodiment-specific adapters a file named
+            `*_backbone.ckpt` should omit: `combine.{0,2,4}.{weight,bias}`,
+            `cond_obs_emb.*`, `final_layer.linear.*` and two more — all of whose shapes
+            depend on action_dim / state_dim / cond_dim.
+            **The released head's prediction_horizon is 50, not the config default 16** —
+            recovered from `pos_embed` (1, 50, 1280); with 16 it is the only shape
+            mismatch, with 50 there are none. Nothing else in the release states this.
+
+            Checkpoint layout: raw torch save, no config.json, tensors nested at
+            ckpt["nets"]["nets"] under a `noise_pred_net.` prefix.
+
+            ScaleDP-H = 32 blocks x 1280 wide x 16 heads, DiT-style adaLN (6*1280 = 7680),
+            mlp ratio 4 (5120), timestep freq embedding 256.
+
+
+[6] The VLA config delta is a config.json SWAP, not a code path
+----------------------------------------------------------------
+Date:        2026-08-19
+Fingerprint: ValueError: The checkpoint you are trying to load has model type
+             `qwen2_vla` but Transformers does not recognize this architecture. This
+             could be because of an issue with the checkpoint, or because your version of
+             Transformers is out of date.
+
+Two separate things, and the error message misdirects on both:
+
+(a) Stock `Qwen/Qwen2-VL-2B-Instruct` ships `model_type: qwen2_vl`, so
+    `AutoConfig.from_pretrained` returns a plain `Qwen2VLConfig` and every VLA field is
+    silently dropped. README line 86 says to REPLACE config.json with `docs/config.json`.
+    The delta is exactly two things, nothing else:
+        model_type:        qwen2_vl -> qwen2_vla
+        policy_head_type:  (absent) -> scale_dp_policy
+    We keep the original as `config.json.official` beside it.
+
+(b) After the swap the error above appears, which reads like a transformers version
+    problem. It is not: `AutoConfig.register("qwen2_vla", ...)` lives at the BOTTOM of
+    `qwen2_vla/models/configuration_qwen2_vla.py`, so the model type only exists once
+    that module has been imported. Importing `policy_heads` alone is not enough.
+
+Also note `using_film`, `policy_head_config` and `policy_head_size` are READ by
+`modeling_qwen2_vla.py` but are NOT declared on `Qwen2VLAConfig`. They exist only because
+`train_vla.py::parse_param` injects them after construction. Reading the config class
+tells you nothing about them — tools/build_vla.py mirrors that injection.
+`ScaleDPPolicyConfig` also stores the action dim as `input_dim`/`output_dim`, not
+`action_dim`.
+
+
+VERIFIED MILESTONES (continued)
+--------------------------------
+2026-08-19  **VLA assembles from stock Qwen2-VL-2B + ScaleDP-H** (tools/build_vla.py):
+            3.179B total = visual 0.665B + language 1.544B + policy_head 0.956B +
+            input_action_proj / reasoning_action_proj / reasoning_film at 4.72M each.
+            transformers' "newly initialized" list contains ONLY `policy_head.*` and the
+            three fusion modules — i.e. **every stock Qwen2-VL weight landed**, which is
+            the only load fidelity available here. The head is 0.956B at horizon 50,
+            matching the released ScaleDP-H exactly.
+            Not a fidelity check: no released DiVLA checkpoint exists, so the head and
+            fusion modules are random. The best available initialisation is stock VLM +
+            `lesjie/scale_dp_h` stage-1 head — worth wiring next.
+
+2026-08-19  **Reasoning-injection path exercised** — 7 tests, tests/test_reasoning_injection.py,
+            driving the real `film_forward` bound to a stub holding just the three modules
+            it touches (no 2B backbone needed, runs in ~2s). Pins: FiLM is exactly the
+            identity at init; reasoning DOES move the output once FiLM is non-zero; output
+            is (B, 1, D); left padding is excluded from the observation span; the boundary
+            is driven by the label mask; and the residual is exactly mean(hidden[start:end]).
+
+
+[7] check_data_integrity.py reuses the PREVIOUS file's data on a failed load
+-----------------------------------------------------------------------------
+Date:        2026-08-19
+Cause:       `data_utils/check_data_integrity.py::get_norm_stats` wraps the h5 read in
+             try/except, logs the error — and then falls through:
+
+                 try:
+                     with h5py.File(dataset_path, 'r') as root:
+                         qpos = root['/observations/qpos'][()]
+                         ...
+                 except Exception as e:
+                     rank0_print(f'Error loading {dataset_path} ...')
+                     rank0_print(e)
+                 all_qpos_data.append(torch.from_numpy(qpos))   # <- always runs
+
+             `qpos` still holds the PREVIOUS iteration's array, so a corrupt episode
+             silently duplicates its predecessor into the normalisation statistics (or
+             raises NameError if it is the first file). Normalisation stats are then
+             quietly wrong for the whole run.
+             The module also hardcodes an absolute path at import scope
+             (`path = "/media/rl/SanDisk PRO-BLAD/aloha_data/1_10"`).
+
+Fix:         Not patched — we do not use it. `DexVLA_Robotics/h5_format.py` validates instead,
+             and treats an unopenable file as a PROBLEM, never a skip. Pinned by
+             `test_unopenable_file_is_a_problem_not_a_skip`.
+
+
+[8] Pad-token counting is occurrence-based, and the pad id IS the bos id
+-------------------------------------------------------------------------
+Date:        2026-08-19
+Latent, not currently triggered — recorded because it fails silently if it ever fires.
+
+`film_forward` computes the start of the observation span as:
+    temp = input_ids[i] == 151643   # "pad token id for qwen2_vl"
+    start = sum(temp.int())
+That COUNTS every occurrence of 151643 anywhere in the sequence; it does not measure the
+leading padding run. And `docs/config.json` sets **bos_token_id = 151643** — the same id.
+So any occurrence outside the left padding (a BOS, or that id appearing mid-sequence)
+shifts `start` and silently mis-slices the observation span.
+
+Not currently triggered: Qwen2's chat template does not prepend BOS. But it is one
+tokenizer change away, and the failure is a quietly worse policy rather than an error.
+Pinned by `test_pad_count_is_occurrence_based_not_leading_run`, which asserts the CURRENT
+behaviour and tells the reader to delete it if upstream switches to a leading-run scan.
+
+
+VERIFIED MILESTONES (continued 2)
+----------------------------------
+2026-08-19  **Inference-time reasoning path checked.** At inference there are no labels,
+            so `evaluate()` generates first and then FABRICATES them (-100 over the
+            prompt span, 1 over the generated span). Verified that the fabricated mask
+            recovers the SAME boundary the training mask does — if the two disagreed by a
+            token, the model would be conditioned differently at inference than in
+            training, with no error anywhere. Also pinned that the fabricated labels are
+            float, while training labels are long token ids.
+
+2026-08-19  **HDF5 episode format documented and validated** — `DexVLA_Robotics/h5_format.py`,
+            12 tests against synthetic files. The layout exists nowhere upstream except
+            as index expressions in `data_utils/utils.py::load_from_h5`:
+                /observations/qpos            (T, state_dim)
+                /observations/qvel            (T, state_dim)
+                /observations/images/<cam>    (T, H, W, 3) uint8
+                /action                       (T, action_dim)
+                language_raw                  (>=1,) bytes, [0]
+                reasoning                     (>=1,) bytes, [0]     per EPISODE
+                substep_reasonings            (T,)   bytes, [t]     per TIMESTEP
+            Two implied-but-unstated rules: `substep_reasonings` **takes precedence** over
+            `reasoning` (checked first, only falls back), so a short one raises mid-epoch;
+            and camera names are dataset KEYS from `aloha_scripts/constants.py`
+            (cam_high, cam_left_wrist, cam_right_wrist), so a rename is a KeyError deep in
+            the loader.
+
+Tests: 22 passed (10 reasoning-injection + 12 h5 format).
+
+
+ARCHITECTURE NOTES (read from source, not yet exercised)
+--------------------------------------------------------
+Reasoning injection ("reasoning following"), `modeling_qwen2_vla.py::film_forward`:
+  - The prompt span is label-masked with -100 and the reasoning span is not, so a
+    bitwise-XOR over `labels == -100` between adjacent positions locates the boundary.
+  - `start` skips left padding by counting Qwen2-VL pad tokens (id 151643).
+  - observation span -> `input_action_proj`; reasoning span -> `reasoning_action_proj`;
+    both are `ActionProjector`, which AdaptiveAvgPool1d's over the sequence so each batch
+    element collapses to (1, D) — which is what makes the later `cat(dim=0)` safe.
+  - `reasoning_film(input_embeddings, reasoning_embeddings)` is FiLM: reasoning produces
+    the scale/shift that modulate the observation embedding. A mean-pooled `identity`
+    residual is added afterwards.
+  - **FiLM is ZERO-INITIALISED** (scale_fc and shift_fc weights and biases all zeroed),
+    so at init the reasoning channel is EXACTLY the identity and contributes nothing. It
+    must be learned. Untrained-but-plausible actions are therefore the expected failure
+    mode if the reasoning path is mis-wired — it will not crash.
+  - At INFERENCE there are no labels, so the model generates first and then FABRICATES a
+    labels tensor (-100 over the prompt span, 1 over the generated span) to recover the
+    same boundary. Note it passes `input_ids=output_ids` there, and the synthesised
+    labels are float rather than long.
+
+
+[N] Upstream hardcodes CUDA and bf16 in six places — DiVLA could not run anywhere else
+----------------------------------------------------------------------------------------
+Date:        2026-08-20
+Fingerprint: A cascade, each one hiding the next:
+               1. AssertionError: Torch not compiled with CUDA enabled
+                  (modeling_qwen2_vla.py:1993, `input_ids.to('cuda')`)
+               2. RuntimeError: mat1 and mat2 must have the same dtype, but got
+                  BFloat16 and Float   (vision block, `.to(torch.bfloat16)`)
+               3. AssertionError: Torch not compiled with CUDA enabled
+                  (modeling_scaledp.py:428, `torch.randn(...).cuda()`)
+               4. NameError: name 'self' is not defined  — my own first fix, which read
+                  `self.mlp[0].weight.dtype` inside a @staticmethod
+
+Cause:       `evaluate()` and `forward()` move every tensor with a literal `'cuda'`, and
+             `self.computed_type` is assigned `torch.bfloat16` unconditionally. The
+             vision block casts its LayerNorm output to bf16 on every call, and ScaleDP's
+             timestep embedding both computes and returns in bf16. None of this is
+             configurable — it is written into the model definition.
+
+Why it       Both matter beyond the Mac. bf16 is not merely a local inconvenience: the
+matters:     T4 this project trains on is Turing (sm_75) and has NO bf16, so the fp16
+             path has to work too. A model that can only run in bf16 on CUDA cannot run
+             on half the compute this repo actually has.
+
+Fix:         patches/0002 (qwen2_vla) and patches/0003 (scaledp). Every `'cuda'` becomes
+             `self.device`; `computed_type` becomes `self.dtype`, which is the dtype of
+             the model's own parameters and therefore a no-op on upstream's bf16-on-CUDA
+             path; the vision block's cast is dropped (LayerNorm already returns the
+             module's dtype); ScaleDP's timestep embedding stays fp32 and `forward` casts
+             to the MLP's dtype, since the staticmethod cannot see the module;
+             `torch.cuda.empty_cache()` is guarded by `torch.cuda.is_available()`.
+
+Verified:    DiffusionVLA now runs a full forward on CPU: build 11s, inference 3.3s,
+             `action.joints (1, 8, 14)`, reasoning string generated. End-to-end over ZMQ
+             from the ROS bridge in `tests/test_ros_bridge_against_real_divla.py`,
+             6 tests.
+
+Not          These patches are only exercised on the fp32/CPU path. The claim that they
+verified:    are a no-op for bf16-on-CUDA is read from the code, not measured. Before any
+             DiVLA metric is trusted, run the same forward on a GPU with and without the
+             patch and diff the activations — the patch is in patches/ precisely so
+             pristine upstream stays available for that diff.

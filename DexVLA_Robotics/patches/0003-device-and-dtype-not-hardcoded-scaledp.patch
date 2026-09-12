@@ -1,0 +1,43 @@
+diff --git a/policy_heads/models/transformer_diffusion/modeling_scaledp.py b/policy_heads/models/transformer_diffusion/modeling_scaledp.py
+index e2cb001..8c42464 100644
+--- a/policy_heads/models/transformer_diffusion/modeling_scaledp.py
++++ b/policy_heads/models/transformer_diffusion/modeling_scaledp.py
+@@ -126,17 +126,22 @@ class TimestepEmbedder(nn.Module):
+         # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
+         half = dim // 2
+         freqs = torch.exp(
+-            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.bfloat16) / half
++            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
+         ).to(device=t.device)
+         args = t[:, None].float() * freqs[None]
+         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+         if dim % 2:
+             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+-        return embedding.to(dtype=torch.bfloat16)
++        # Was a hardcoded bf16 return. `timestep_embedding` is a staticmethod and
++        # cannot see the module's dtype, so it stays in fp32 and `forward` below
++        # does the cast -- which is where the weights actually are.
++        return embedding
+ 
+     def forward(self, t):
+         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
+-        t_emb = self.mlp(t_freq)
++        # Match the MLP's own dtype instead of assuming bf16: fp32 on CPU,
++        # fp16 on a T4 (sm_75 has no bf16), bf16 wherever upstream ran.
++        t_emb = self.mlp(t_freq.to(dtype=self.mlp[0].weight.dtype))
+         return t_emb
+ 
+ 
+@@ -425,7 +430,11 @@ class ScaleDP(PreTrainedModel):
+             action_dim = self.action_dim
+ 
+             # initialize action from Guassian noise
+-            noisy_action = torch.randn((B, Tp, action_dim)).cuda()
++            # Was `.cuda()`, which makes inference impossible on any CPU box --
++            # including the Mac this repo is developed on. The conditioning tensor
++            # already carries the right device, and the next line already casts to
++            # its dtype, so following it is both correct and a no-op on CUDA.
++            noisy_action = torch.randn((B, Tp, action_dim), device=hidden_states.device)
+ 
+             naction = noisy_action.to(dtype=hidden_states.dtype)
+             # init scheduler

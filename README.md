@@ -32,6 +32,21 @@ upstream's own `PlanningMetric`, with the official checkpoint loading 0 missing 
 
 **→ [Visualization, metric results and the full fidelity chain](diffusiondrive_planner/)**
 
+### [DexVLA](DexVLA_Robotics/) — VLM with a plug-in diffusion expert
+
+Qwen2-VL-2B with a ScaleDP transformer diffusion action head, plus a reasoning channel that
+conditions the denoiser on the model's own emitted reasoning. The released Stage-1 head loads
+0-unexpected against upstream's class, and the assembled 3.18 B VLA runs end to end on CPU and
+over ZMQ from the ROS2 bridge.
+
+**This one is not a reproduction, and says so.** Only Stage 1 is public — there is no Stage-2/3
+checkpoint — and upstream's only evaluation entry point drives a real AgileX robot, with no sim
+harness of any kind. So the 0/0 + reproduce-the-metric bar is unreachable here no matter how much
+is ported. The deliverable is a correct architecture, fine-tuned from the released Stage-1 head,
+measured against our own GR00T baseline under an identical budget.
+
+**→ [What is achievable, the architecture, and the free-GPU budget](DexVLA_Robotics/)**
+
 ---
 
 ## Roadmap
