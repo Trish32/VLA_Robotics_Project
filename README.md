@@ -35,34 +35,15 @@ RGB-D ──▶ ORB-SLAM3 / DROID-SLAM ──▶ TSDF fusion ──▶ OpenMask3
 
 | stage | measured |
 |---|---|
-| **localize** — ORB-SLAM3 (upstream `4452a3c`, 0 patches) | **ATE 1.03 cm**, 798/798 frames, 41.4 FPS CPU |
-| **localize, dynamic scene** — + YOLOv8n/ByteTrack rejection | **ATE 80.92 → 18.70 cm (−76.9%)** on `fr3/walking_xyz` |
-| **fuse** — TSDF, gravity-levelled | 133,928 points, 6.3 × 4.0 × 2.2 m |
-| **segment** — Mask3D + SAM + CLIP | checkpoint **0/0/0** (469 tensors, 39.66 M) via a pure-PyTorch sparse conv |
-| **pose** — FoundationPose | both checkpoints **0/0/0**; scorer 15.77 M + refiner 16.83 M **construct on a T4** |
-| **ground** — scene graph → target | `"the chair"` → `chair_4`, sim 0.286, margin 0.050 |
-| **act** — GR00T N1.6-3B | **16 steps × 29 DoF**, all finite, 4.4 s CPU |
+| **localize** — ORB-SLAM3 | **ATE 1.03 cm**, 798/798 frames, 41.4 FPS CPU |
+| **localize, dynamic** — + YOLOv8n/ByteTrack | **ATE 80.92 → 18.70 cm (−76.9%)** |
+| **segment** — Mask3D + SAM + CLIP | checkpoint **0/0/0**, via a pure-PyTorch sparse conv verified at **1e-10** |
+| **pose** — FoundationPose | checkpoints **0/0/0**, constructs on a T4 — `register()` not yet run |
+| **act** — GR00T N1.6-3B | **16 steps × 29 DoF**, 4.4 s CPU |
 
-**→ [Demo, full numbers, and what is *not* established](pipeline/)**
+**→ [The stack, the demo, and the honest limit](pipeline/)**
 **→ [RESULTS.md](RESULTS.md)** — every measurement, labelled MEASURED / EXACT / MODELLED
-
-### Results worth naming
-
-**MinkowskiEngine replaced with a pure-PyTorch sparse convolution**, verified two independent
-ways: dense-grid equivalence to `nn.Conv3d` at **atol 1e-10**, and kernel-offset enumeration
-checked against upstream's own `kernel_region.hpp` compiled `-DCPU_ONLY` — **195 offsets, exact**.
-The dense oracle alone cannot catch an ordering error, because it builds its reference from the
-same offsets under test.
-
-**ATE understates world-model error by ~7×.** Over 2,172 fused observations, a 1.03 cm camera
-trajectory places objects **7.30 cm** from truth. Decomposition shows camera **rotation (2.29°)**
-accounts for essentially all of it; translation contributes ~0.9 cm, and averaging over 316–690
-views removes only **~2%** — the drift is systematic.
-
-**The world frame was never gravity-aligned.** SLAM returns poses in the first keyframe's camera
-frame; the supporting plane's normal sat **50.1° off** the axis every consumer treated as vertical.
-Levelling it, then re-segmenting, took Mask3D scores from "low" to **0.556–0.943** and produced the
-pipeline's first `on` relation.
+**→ [Plan.md](Plan.md)** — what is *not* done, why, and what would close it
 
 ---
 
@@ -106,6 +87,9 @@ measured against our own GR00T baseline under an identical budget.
 Every SLAM number in this repo is **ORB-SLAM3**. DROID-SLAM is integrated and its checkpoint
 loads, but it has never run — that distinction is kept explicit rather than folded into a
 "DROID-SLAM/ORB-SLAM3" credit.
+
+What each remaining gap is blocked on, and what would close it, is in
+**[Plan.md](Plan.md)** rather than repeated here.
 
 ## License
 

@@ -555,18 +555,23 @@ player, so the inline demo has to be a GIF.
 ## Not yet established
 
 Listed rather than omitted, because a results page that only shows successes is not a
-results page.
+results page. **The detail lives in [Plan.md](Plan.md)** — what each gap is blocked on,
+what would close it, and in what order. Summarised here so this page is self-contained:
 
-| item | status | blocker |
-|---|---|---|
-| **OpenMask3D mIoU / open-vocab recall** | not measured | needs ground-truth instance labels; ScanNet200 is a gated ~1 TB download |
-| **MobileSAM precision cost** | not measured | the only speedup step that changes outputs; needs the above |
-| **Wall-clock speedup in seconds** | modelled only | needs a CUDA box with real weights |
-| **DROID-SLAM tracking** | never executed | `lietorch` / `droid_backends` are CUDA-compile-only |
-| **FoundationPose `register()` on real data** | not yet run | the model now LOADS on GPU ([§3.2](#32-the-model-runs-on-a-t4--measured-kaggle-t4)); what remains is feeding it a mesh + mask |
-| **End-to-end 6-DoF grasp** | pose stage never ran | the chain runs end to end ([§5](#5-end-to-end-run--measured)), but FoundationPose is CUDA-gated, so object poses are position-only |
-| **Monocular tracking-loss reduction** | not measured | RGB-D loses no frames, so the experiment needs the monocular variant |
-| **World model in a live ROS graph** | **established** — see [§4.3.1](#431-world-model-in-a-live-ros-graph--measured) | for a permanent setup the container needs one mount: `- /Users/trish/VLAProjects/pipeline:/ws/src/pipeline:ro` |
+| item | state |
+|---|---|
+| OpenMask3D mIoU / open-vocab recall | not measured — needs ground-truth instance labels |
+| MobileSAM precision cost | not measured — needs the above |
+| Wall-clock speedup in seconds | **MODELLED** only, never timed |
+| DROID-SLAM tracking | never executed — `lietorch`/`droid_backends` are CUDA-compile-only |
+| FoundationPose `register()` | not yet run — the model loads and constructs on a T4 ([§3.2](#32-the-model-runs-on-a-t4--measured-kaggle-t4)) |
+| End-to-end 6-DoF grasp | blocked on the above; object poses are position-only |
+| Monocular tracking-loss reduction | ill-posed on RGB-D, which loses no frames |
+| `inside` relation correctness | fires, but produces at least one nonsense edge from AABB overlap |
+
+Established since this list was written: the **world model in a live ROS graph**
+([§4.3.1](#431-world-model-in-a-live-ros-graph--measured)) and the **first `on` relation
+on real data** ([§4.4](#44-the-world-frame-was-never-gravity-aligned--measured)).
 
 ### 3.2 The model runs on a T4 · MEASURED (Kaggle T4)
 
