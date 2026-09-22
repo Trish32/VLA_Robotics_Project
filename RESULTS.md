@@ -666,6 +666,12 @@ conda run -n foundationpose_vl python foundationpose_6dof/tools/load_checkpoint.
 # Speedup accounting
 conda run -n openmask3d_vl python openmask3d_semantic/tools/analyze_speedup.py
 ```
+Every SLAM number in this repo is **ORB-SLAM3**. DROID-SLAM is integrated and its checkpoint
+loads, but it has never run — that distinction is kept explicit rather than folded into a
+"DROID-SLAM/ORB-SLAM3" credit.
+
+What each remaining gap is blocked on, and what would close it, is in
+**[Plan.md](Plan.md)** rather than repeated here.
 
 Per-project root-cause logs live in each project's `bug_log.txt` — one entry per
 root-caused bug, with fingerprint, cause, fix, and what it cost to find.

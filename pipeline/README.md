@@ -52,50 +52,36 @@ RGB-D ──▶ ORB-SLAM3 / DROID-SLAM ──▶ TSDF fusion ──▶ OpenMask3
 
 **→ [Full numbers, ablations and what is *not* established](../RESULTS.md)**
 
-## ATE understates world-model error by ~7×
+## What the numbers say
 
-The stack's central composition is `T_anchor_obj = T_anchor_cam @ T_cam_obj`, and the
-camera pose on the left is an estimate. Fusing a perfect detection (synthesised from TUM
-ground truth) with the ORB-SLAM3 estimate, through the real `refine_with_pose`, over 2172
-observations in the gravity-levelled frame:
+Three results carry the project, each measured and each with its own section in
+[RESULTS.md](../RESULTS.md):
 
-| | value |
-|---|---|
-| camera ATE RMSE | 1.03 cm |
-| **fused object placement error** | **7.30 cm mean**, 12.30 cm p95, 17.24 cm max |
-| attributable to camera *rotation* (2.29°) | ~100% |
-| attributable to camera *translation* | ~0.9 cm |
-| improvement from averaging 316–690 views | **~2%** |
+- **ATE understates world-model error by ~7×.** A 1.03 cm camera trajectory places
+  objects **7.30 cm** from truth over 2,172 observations. Rotation (2.29°) accounts for
+  essentially all of it; averaging 316–690 views removes ~2%.
+- **The world frame was never gravity-aligned** — the supporting plane's normal sat
+  **50.1°** off the axis every consumer treated as vertical. Levelling it, then
+  re-segmenting, produced the pipeline's first `on` relation.
+- **Pre-grasp frames were landing inside their objects**, because the standoff was
+  measured from the object origin. Caught only by running the node in a live ROS2 graph.
 
-Two things follow. The error is **rotational**, amplified by object range — 4.53 cm at
-1.22 m, 9.21 cm at 3.36 m, bounded above by `d·θ` — so a stack tuned on ATE alone is
-tuned on the term contributing 12% of its own error. And the drift is **systematic**:
-averaging hundreds of views removes ~2%, so multi-view fusion is not a way out.
-
-This is the measured argument for anchoring object frames to keyframes rather than to
-`map`: a keyframe-anchored object inherits the rotational correction when bundle
-adjustment moves its keyframe.
-
-```bash
-conda run -n foundationpose_vl python pipeline/tools/validate_pose_fusion.py
-```
+**→ [RESULTS.md](../RESULTS.md)** · **→ [Plan.md](../Plan.md)** for what is not done
 
 ## The honest limit
 
-`nvdiffrast` is CUDA-only, so **FoundationPose never ran** and no pose refinement is in
-this result. Object poses are position-only with identity rotation: a segmentation mask
-carries no orientation, and `observations.from_openmask3d` refuses to invent one rather
-than hand a planner an authoritative-looking wrong pose. Every stage consumes the
-previous stage's real output; the chain does not yet produce 6-DoF grasps.
+`nvdiffrast` is CUDA-only, so **FoundationPose has never returned a pose**. Its model now
+loads and constructs on a T4 (scorer 15.77 M, refiner 16.83 M), and the mesh + mask
+bundle is built from our own TSDF — but `register()` has not run. Object poses here are
+position-only with identity rotation: a segmentation mask carries no orientation, and
+`observations.from_openmask3d` refuses to invent one rather than hand a planner an
+authoritative-looking wrong pose.
 
-**Recognition is the weak stage, and it did not improve.** Segmentation got much better
-once the frame was levelled (scores 0.556–0.943), but CLIP labelled **6 of 7 instances
-"a desk"**, similarities 0.198–0.239, with margins over the runner-up as thin as 0.198 vs
-0.182. One 64-point, 7 cm-tall instance was also called a desk. That is close to a
-constant prediction, so `the monitor is on the desk` is geometrically sound while its
-*labels* rest on a 0.198 cosine similarity. These are open-vocabulary similarities, not
-calibrated confidences; the mIoU/recall that would settle it needs ground-truth instance
-annotations and is not measured.
+**Recognition is the weak stage.** Median top-1 CLIP margin is **0.011**; at that
+separation an argmax over a fixed vocabulary is close to arbitrary. Grounding no longer
+depends on it — `e2e_ground.py` ranks the saved per-instance features against the query —
+but no mIoU exists, so no claim about label accuracy is made. Detail in
+[Plan.md](../Plan.md).
 
 ## Live in a ROS2 graph
 

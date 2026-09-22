@@ -62,14 +62,6 @@ conditions the denoiser on the model's own emitted reasoning. The released Stage
 0-unexpected against upstream's class, and the assembled 3.18 B VLA runs end to end on CPU and
 over ZMQ from the ROS2 bridge.
 
-**This one is not a reproduction, and says so.** Only Stage 1 is public — there is no Stage-2/3
-checkpoint — and upstream's only evaluation entry point drives a real AgileX robot, with no sim
-harness of any kind. So the 0/0 + reproduce-the-metric bar is unreachable here no matter how much
-is ported. The deliverable is a correct architecture, fine-tuned from the released Stage-1 head,
-measured against our own GR00T baseline under an identical budget.
-
-**→ [What is achievable, the architecture, and the free-GPU budget](DexVLA_Robotics/)**
-
 ---
 
 ## Roadmap
@@ -84,12 +76,6 @@ measured against our own GR00T baseline under an identical budget.
 | DROID-SLAM | `droid.pth` loads 0/0/0 | **never executed** — `lietorch`/`droid_backends` are CUDA-compile-only |
 | ROS2 bridge | wire format byte-identical to upstream | live in a ROS2 Jazzy graph ✓ |
 
-Every SLAM number in this repo is **ORB-SLAM3**. DROID-SLAM is integrated and its checkpoint
-loads, but it has never run — that distinction is kept explicit rather than folded into a
-"DROID-SLAM/ORB-SLAM3" credit.
-
-What each remaining gap is blocked on, and what would close it, is in
-**[Plan.md](Plan.md)** rather than repeated here.
 
 ## License
 
