@@ -1,0 +1,27 @@
+{
+  "views": 12,
+  "image_hw": [
+    240,
+    320
+  ],
+  "intrinsics_fx_fy_cx_cy": [
+    250.0,
+    250.0,
+    160.0,
+    120.0
+  ],
+  "fused_points": 28857,
+  "cloud_extent_m": [
+    3.586,
+    1.496,
+    2.296
+  ],
+  "trajectory_length_m": 1.988,
+  "scene_dir": "pipeline/assets/demo_scene",
+  "files_written": [
+    "0.jpg",
+    "1.jpg",
+    "10.jpg"
+  ],
+  "ply": "pipeline/assets/demo_scene/demo_scene.ply"
+}

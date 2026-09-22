@@ -1,36 +1,78 @@
 # VLA Robotics Project
 
-CUDA-first **adaptations** of end-to-end driving and robotics policies — DiffusionDrive,
-GR00T N1.6, DiffusionVLA, DROID-SLAM — each validated against its official checkpoint
-before anything is changed.
+An **object-centric RGB-D perception stack for embodied AI** — camera localization, open-vocabulary
+instance segmentation and 6-DoF object pose fused into a hierarchical semantic world model,
+exposed through ROS2/TF2 and read by a VLA policy for action chunking.
 
-The rule for every project here: **load the official weights at 0 missing / 0 unexpected and
-reproduce the published metric first.** An adaptation that was never checked against the
-original is not measurable.
+![end-to-end run](pipeline/assets/e2e_demo.gif)
 
-Upstream stays pinned and unvendored; our edits live in each project's `patches/` so upstream
-can be re-pulled and diffed. Each project keeps its own `README.md` and `bug_log.txt`.
+*One run on TUM `freiburg3_walking_xyz` — a cluttered office with people walking through it.
+[Full resolution](pipeline/assets/e2e_demo.mp4) · [the stack in detail](pipeline/)*
+
+CUDA-first **adaptations**, not reimplementations: upstream stays pinned and unvendored, our
+edits live in each project's `patches/`, and the rule for every project is **load the official
+weights at 0 missing / 0 unexpected before anything is changed.** An adaptation that was never
+checked against the original is not measurable.
 
 > **Sibling repo — [VLM-AD-Project](https://github.com/Trish32/VLM-AD-Project)** — pure-PyTorch
-> ports of BEVFormer, BEVFusion, FlashOcc, Simple-BEV, Sparse4D v2/v3, QCNet and a closed-loop
-> KBM simulator, all running on Apple Silicon (MPS) without `mmcv`/`mmdet3d`/`spconv`.
-> This repo is the deliberate inverse: CUDA-first, and it *adapts* upstream rather than
-> reimplementing it. The two are directly connected — DiffusionDrive's `nusc` branch is
-> SparseDrive plus one file, and **SparseDrive is already ported and metric-validated**
-> (mAP 0.463 / NDS 0.480) in
-> [`sparse4d_vldrive`](https://github.com/Trish32/VLM-AD-Project/tree/main/sparse4d_vldrive).
+> ports of BEVFormer, BEVFusion, FlashOcc, Simple-BEV, Sparse4D v2/v3, QCNet, a closed-loop
+> KBM simulator and **DiffusionDrive**, all running on Apple Silicon (MPS) without
+> `mmcv`/`mmdet3d`/`spconv`. This repo is the deliberate inverse: CUDA-first, and it *adapts*
+> upstream rather than reimplementing it.
+
+---
+
+## The stack
+
+```
+RGB-D ──▶ ORB-SLAM3 / DROID-SLAM ──▶ TSDF fusion ──▶ OpenMask3D ──▶ FoundationPose
+                                                            │              │
+                                                            ▼              ▼
+                                                     scene graph ◀── 6-DoF pose
+                                                            │
+                                              ROS2 / TF2 ───┴──▶ GR00T N1.6 / DexVLA
+```
+
+| stage | measured |
+|---|---|
+| **localize** — ORB-SLAM3 (upstream `4452a3c`, 0 patches) | **ATE 1.03 cm**, 798/798 frames, 41.4 FPS CPU |
+| **localize, dynamic scene** — + YOLOv8n/ByteTrack rejection | **ATE 80.92 → 18.70 cm (−76.9%)** on `fr3/walking_xyz` |
+| **fuse** — TSDF, gravity-levelled | 133,928 points, 6.3 × 4.0 × 2.2 m |
+| **segment** — Mask3D + SAM + CLIP | checkpoint **0/0/0** (469 tensors, 39.66 M) via a pure-PyTorch sparse conv |
+| **pose** — FoundationPose | both checkpoints **0/0/0**; scorer 15.77 M + refiner 16.83 M **construct on a T4** |
+| **ground** — scene graph → target | `"the chair"` → `chair_4`, sim 0.286, margin 0.050 |
+| **act** — GR00T N1.6-3B | **16 steps × 29 DoF**, all finite, 4.4 s CPU |
+
+**→ [Demo, full numbers, and what is *not* established](pipeline/)**
+**→ [RESULTS.md](RESULTS.md)** — every measurement, labelled MEASURED / EXACT / MODELLED
+
+### Results worth naming
+
+**MinkowskiEngine replaced with a pure-PyTorch sparse convolution**, verified two independent
+ways: dense-grid equivalence to `nn.Conv3d` at **atol 1e-10**, and kernel-offset enumeration
+checked against upstream's own `kernel_region.hpp` compiled `-DCPU_ONLY` — **195 offsets, exact**.
+The dense oracle alone cannot catch an ordering error, because it builds its reference from the
+same offsets under test.
+
+**ATE understates world-model error by ~7×.** Over 2,172 fused observations, a 1.03 cm camera
+trajectory places objects **7.30 cm** from truth. Decomposition shows camera **rotation (2.29°)**
+accounts for essentially all of it; translation contributes ~0.9 cm, and averaging over 316–690
+views removes only **~2%** — the drift is systematic.
+
+**The world frame was never gravity-aligned.** SLAM returns poses in the first keyframe's camera
+frame; the supporting plane's normal sat **50.1° off** the axis every consumer treated as vertical.
+Levelling it, then re-segmenting, took Mask3D scores from "low" to **0.556–0.943** and produced the
+pipeline's first `on` relation.
 
 ---
 
 ## Projects
 
-### [DiffusionDrive](diffusiondrive_planner/) — truncated diffusion planner (CVPR 2025 Highlight)
+### [Object-centric RGB-D perception stack](pipeline/)
 
-Denoises a driving trajectory in **2 steps**, seeded from anchor trajectories plus a little
-noise, rather than ~100 steps from Gaussian noise. Reproduced on nuScenes mini_val against
-upstream's own `PlanningMetric`, with the official checkpoint loading 0 missing / 0 unexpected.
-
-**→ [Visualization, metric results and the full fidelity chain](diffusiondrive_planner/)**
+The stack above. Runs end to end on real TUM RGB-D on CPU. FoundationPose's model now loads and
+constructs on a T4; `register()` on our own TSDF-derived mesh is queued, and the project page says
+so rather than implying a pose result exists.
 
 ### [DexVLA](DexVLA_Robotics/) — VLM with a plug-in diffusion expert
 
@@ -51,26 +93,21 @@ measured against our own GR00T baseline under an identical budget.
 
 ## Roadmap
 
-| Project | Status | Validation target |
+| Component | Status | Validation target |
 |---|---|---|
-| **DiffusionDrive** — nuScenes | **done** — reproduced | published L2 avg 0.57 |
-| DiffusionDrive — NAVSIM | next | 88.1 PDMS on navtest; 60M/ResNet-34, the one model that trains end-to-end on a 16 GB T4 |
+| **Perception stack** — SLAM → graph → VLA | **runs end to end**, stages 1–6 | ORB-SLAM3 ATE 1.03 cm reproduced |
+| **OpenMask3D** — sparse conv + Mask3D | **0/0/0**, 1e-10 vs `nn.Conv3d` | mIoU / open-vocab recall — needs ScanNet200 GT |
+| **FoundationPose** | **0/0/0**, constructs on T4 | `register()` on a TSDF-derived mesh — queued |
 | GR00T N1.6-3B | checkpoint loads 0/0/0 (3.29 B params) | LIBERO / SimplerEnv success rate |
-| DexVLA | ScaleDP-H Stage-1 head loads 0-unexpected | **only Stage 1 is released and eval is real-robot only** — controlled baseline against GR00T, not a reproduction |
-| DROID-SLAM | `droid.pth` loads 0/0/0 | ATE on TUM-RGBD monocular |
-| ROS2 bridge | built, wire format byte-identical to upstream | live `/vla/joint_trajectory` |
+| DexVLA | ScaleDP-H Stage-1 head loads 0-unexpected | **Stage 1 only, real-robot eval** — controlled baseline, not a reproduction |
+| DROID-SLAM | `droid.pth` loads 0/0/0 | **never executed** — `lietorch`/`droid_backends` are CUDA-compile-only |
+| ROS2 bridge | wire format byte-identical to upstream | live in a ROS2 Jazzy graph ✓ |
 
-Projects land in this repo as they clear the 0/0 + reproduce-the-metric bar.
-
-DiffusionDrive is first because it is the cheapest. Its `nusc` branch is SparseDrive plus
-essentially one new file — `motion_planning_head_v13.py`, the truncated-diffusion planner that
-replaces the regression planner. Everything upstream of it (sparse perception, instance bank,
-motion head) is SparseDrive, which is
-**[already ported and metric-validated](https://github.com/Trish32/VLM-AD-Project/tree/main/sparse4d_vldrive)**
-in the sibling repo. That makes it a planner-head swap on working code rather than a
-from-scratch port.
+Every SLAM number in this repo is **ORB-SLAM3**. DROID-SLAM is integrated and its checkpoint
+loads, but it has never run — that distinction is kept explicit rather than folded into a
+"DROID-SLAM/ORB-SLAM3" credit.
 
 ## License
 
-Our adaptation layer is MIT. Upstream DiffusionDrive, SparseDrive, GR00T, DiffusionVLA and
-DROID-SLAM remain under their own licenses; none of their source is vendored here.
+Our adaptation layer is MIT. Upstream ORB-SLAM3, OpenMask3D/Mask3D, FoundationPose, GR00T,
+DiffusionVLA and DROID-SLAM remain under their own licenses; none of their source is vendored here.

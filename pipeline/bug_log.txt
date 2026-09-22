@@ -1,0 +1,72 @@
+Pipeline glue — bug log
+========================
+Scope: the handoffs between stages. RGB-D -> SLAM -> scene export -> OpenMask3D ->
+FoundationPose -> ROS2. Every bug here is geometric and silent: nothing crashes, the
+wrong thing is simply described with full confidence.
+
+
+[1] open3d 0.20.0 ScalableTSDFVolume integrates nothing on arm64 macOS
+-------------------------------------------------------------------------
+Date:        2026-09-21
+Fingerprint: `fuse_tsdf` returned an empty point cloud for input that is obviously
+             valid. Narrowed with a direct probe:
+
+               create_from_rgbd_image           -> 76800 points, mean z = 1.5  (correct)
+               ScalableTSDFVolume.extract_point_cloud       -> 0
+               ScalableTSDFVolume.extract_voxel_point_cloud -> 0
+               UniformTSDFVolume.extract_voxel_point_cloud  -> 58525
+               UniformTSDFVolume.extract_point_cloud        -> 11956
+
+             `extract_voxel_point_cloud` returning 0 is what localised it: that reads
+             raw voxels, so the failure is in `integrate()`, not in surface extraction
+             or normal estimation.
+
+Ruled out along the way (each was a plausible theory, each was wrong):
+  - lattice alignment. The first hypothesis was that a plane at exactly z=1.5 with
+    voxel_length=0.02 puts the zero-crossing precisely on voxel corners. Testing
+    z=1.51 gave 0 as well.
+  - degenerate single view. Three views with a 5 cm baseline: still 0.
+  - colour type. NoColor with convert_rgb_to_intensity=True: still 0.
+
+Cause:       ScalableTSDFVolume.integrate() is broken in open3d 0.20.0 on this platform.
+             It does not raise — it returns normally having written nothing.
+
+Fix:         `fuse_tsdf` uses UniformTSDFVolume, with bounds derived from the camera
+             track padded by the depth horizon and resolution capped at 512 (allocation
+             is O(resolution^3)).
+
+Why this one matters out of proportion to its size: an empty cloud is not an obviously
+broken value. OpenMask3D would read it as "the room contains nothing", propose no
+instances, and the pipeline would report a clean run with no objects found. The failure
+would have looked like a segmentation problem, three stages downstream of the actual bug.
+
+
+[2] Open3D integrates with WORLD-TO-CAMERA; our poses are CAMERA-TO-WORLD
+----------------------------------------------------------------------------
+Date:        2026-09-21
+
+`volume.integrate(rgbd, intrinsic, extrinsic)` wants the extrinsic, i.e. world-to-camera.
+`slam_server.py` deliberately returns camera-to-world, because that is what
+`nav_msgs/Odometry` wants (where the camera IS in the map frame) and what
+`droid.terminate()` produces.
+
+Passing ours straight through fuses a scene mirrored about the origin, which still looks
+like a plausible room. `fuse_tsdf` inverts, and
+test_fusion_places_geometry_in_front_of_the_camera pins it: a camera at the origin
+looking down +z at a 1.5 m wall must yield points near z = +1.5, not -1.5.
+
+This is the same convention hazard as the DROID pose direction and the scalar-last
+quaternion. Three different places in this pipeline where a sign or an inversion is
+invisible in the output's shape.
+
+
+NOTE — the gauge, and why SceneWriter refuses without it
+----------------------------------------------------------
+Monocular DROID normalises disparity (`depth_video.normalize`), so its translations
+carry an arbitrary scale. Fusing those gives a scene whose size is wrong by an unknown
+factor — and since the per-instance mesh cut from that scene is what FoundationPose
+registers against, the 6-DoF pose and the pre-grasp offset inherit the error.
+
+Nothing downstream can detect it: a room scaled by 0.7 is a perfectly consistent room.
+So `SceneWriter` refuses a non-metric trajectory at the boundary rather than letting it
+propagate, and `slam_server.py` reports `metric` so the boundary has something to check.
