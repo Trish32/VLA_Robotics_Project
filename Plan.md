@@ -178,6 +178,29 @@ sample capped at 200 points: **4–8 KB per node**, small enough to publish. Nod
 without point sets keep the old box behaviour, so nothing that does not supply geometry
 changes.
 
+### Extents are taken after outlier rejection
+
+An axis-aligned extent is a *maximum* over points, so it is decided by the single
+furthest one in each direction — the statistic most sensitive to a stray. That extent
+becomes the box published to TF2 **and** the support function the pre-grasp standoff is
+measured from, so a flier does not merely look wrong, it moves the frame a planner
+reaches to.
+
+Rejecting points whose local neighbourhood is anomalously sparse (k = 20, 2σ) drops
+**0.4–3.6%** of each instance and shrinks volumes to **0.52–0.89×**:
+
+| instance | raw extent (m) | after rejection | pre-grasp shift |
+|---|---|---|---|
+| `chair_4` (the target) | 1.58 × 1.18 × **0.99** | 1.58 × 1.11 × **0.59** | **−20.1 cm** |
+| `desk_1` | 2.27 × 1.65 × 1.19 | 2.00 × 1.26 × 1.10 | −4.5 cm |
+| `desk_2` | 2.71 × 2.19 × 0.62 | 2.23 × 1.52 × 0.57 | −2.6 cm |
+
+**13 stray points out of 1,142** were adding 40 cm to the chair's height and pushing its
+pre-grasp frame a fifth of a metre too far back. Density-based rather than a percentile
+trim, which would discard a fixed fraction whether or not anything is wrong. A guard
+keeps the instance whole if the rule would ever reject more than half of it: a bad extent
+is visible and recoverable, a silently truncated instance is neither.
+
 ---
 
 ## 5. Loose ends

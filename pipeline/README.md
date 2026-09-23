@@ -86,6 +86,12 @@ rotation — a segmentation mask carries no orientation, and
 authoritative-looking wrong pose. A stage that admitted the pose anyway would be strictly
 worse than one that has no pose at all.
 
+**Extents are taken after outlier rejection.** An extent is a maximum over points, so a
+single stray sets it — and it becomes both the TF2 box and the support function the
+pre-grasp standoff measures from. Rejecting 0.4–3.6% of points by local density moved the
+target's pre-grasp frame **20.1 cm**; 13 points out of 1,142 had been adding 40 cm to the
+chair's height.
+
 **Relations come from geometry, not bounding boxes.** `inside` is decided by convex-hull
 containment and `near` by surface separation, which removed three spurious edges and
 recovered a true one. The prompt handed to the policy went from *"the chair is inside the
