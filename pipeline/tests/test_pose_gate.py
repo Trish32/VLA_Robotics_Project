@@ -132,3 +132,45 @@ def test_chair4_rotation_probe_angle():
     assert np.linalg.norm(d_fp) == pytest.approx(np.linalg.norm(d_map), abs=0.01)
     cos = d_fp @ d_map / np.linalg.norm(d_fp) / np.linalg.norm(d_map)
     assert np.degrees(np.arccos(cos)) == pytest.approx(99.5, abs=0.5)
+
+
+# ------------------------------------------- hypothesis agreement (map-free check)
+
+from pipeline.tools.e2e_pose import check_agreement
+
+
+def test_agreement_accepts_converged_hypotheses():
+    """mustard0's real numbers: the top-16 are one orientation from different starts."""
+    ok, detail = check_agreement(
+        {"k": 16, "clustered_within_15deg": 16, "median_pairwise_deg": 0.29})
+    assert ok and "16/16" in detail
+
+
+def test_agreement_rejects_scattered_hypotheses():
+    """chair_4's real numbers: the top-16 span 127 deg, so the winner is arbitrary."""
+    ok, _ = check_agreement(
+        {"k": 16, "clustered_within_15deg": 2, "median_pairwise_deg": 127.31})
+    assert not ok
+
+
+def test_agreement_rejects_on_pairwise_spread_even_when_the_count_looks_fine():
+    """A majority can sit within 15 deg of the top while the set is still spread."""
+    ok, _ = check_agreement(
+        {"k": 16, "clustered_within_15deg": 9, "median_pairwise_deg": 40.0})
+    assert not ok
+
+
+def test_agreement_is_skipped_for_pre_r14_results():
+    """Older pose_result.json has no agreement block; absence must not fail the gate."""
+    ok, detail = check_agreement(None)
+    assert ok and "skipped" in detail
+
+
+def test_agreement_inverts_the_score_based_reading():
+    """The withdrawn metric ranked mustard0 WORSE; this one must rank it better."""
+    ours = {"k": 16, "clustered_within_15deg": 2, "median_pairwise_deg": 127.31,
+            "within_1pct": 48}
+    mustard = {"k": 16, "clustered_within_15deg": 16, "median_pairwise_deg": 0.29,
+               "within_1pct": 91}
+    assert mustard["within_1pct"] > ours["within_1pct"]      # flatter scores
+    assert check_agreement(mustard)[0] and not check_agreement(ours)[0]

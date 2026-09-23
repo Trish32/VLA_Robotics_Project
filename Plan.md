@@ -61,11 +61,20 @@ See `foundationpose_6dof/bug_log.txt` entry [4].
    adaptation layer are sound. The difference is the input — 695 px over a one-sided
    Poisson shell, against 3,252 px over a CAD mesh.
 
-   *A metric that failed its own control:* r13 read the scorer's flat top (48/252 within
-   1%) as "orientation unidentifiable". mustard0 is flatter — an exact tie at the top,
-   91/252 within 1% — and still correct, because scores are computed after refinement so
-   converged hypotheses legitimately tie. r14 measures pose clustering instead. See
-   `foundationpose_6dof/bug_log.txt` [6].
+   *A metric that failed its own control, and its replacement:* r13 read the scorer's
+   flat top (48/252 within 1%) as "orientation unidentifiable". mustard0 is flatter — an
+   exact tie, 91/252 — and still correct, because scores are computed after refinement so
+   converged hypotheses legitimately tie. r14 measures **pose clustering** instead, and it
+   separates the cases cleanly:
+
+   | | `chair_4` | mustard0 |
+   |---|---|---|
+   | median pairwise angle, top-16 | **127.31°** | **0.29°** |
+   | within 15° of top-1 | 2/16 | 16/16 |
+
+   This needs neither our map nor ground truth, so it is also a **pre-flight test**:
+   whether an instance is poseable at all, before a registration is spent on it. Now the
+   fourth gate check. See `foundationpose_6dof/bug_log.txt` [6].
 
 An earlier version of this page blamed the 72 cm on a frame convention, on the strength
 of `reset_object` subtracting the mesh's bbox centre. `estimater.py:233` undoes that
@@ -82,7 +91,7 @@ cleaner instance than a 1.58 m coarse proposal — `chair_4` is a region, not an
 translation, rotation and depth before it reaches the world model. Run against the real
 r12 output it refuses **0/8 frames corroborating** — median 73.02 cm, 175.86°, origin
 65 cm behind a surface only 13 cm deep — and the position-only pose from stage 3 stands.
-17 tests cover the gate.
+22 tests cover the gate.
 
 The depth check originally could not fire: its tolerance was half the instance's 3-D
 extent, and `chair_4` spans 1.58 m, so a 60.8 cm error sat inside a 78.9 cm bound. It now

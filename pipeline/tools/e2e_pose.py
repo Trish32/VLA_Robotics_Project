@@ -44,6 +44,42 @@ BUNDLE = E2E / "pose_bundle"
 NS_PER_S = 10 ** 9
 
 
+def check_agreement(agreement: dict | None, *, min_clustered_frac: float = 0.5,
+                    max_pairwise_deg: float = 15.0) -> tuple[bool, str]:
+    """Did the estimator's own top hypotheses agree on an orientation?
+
+    The only check here that needs neither our map nor ground truth — it asks whether
+    `register()` converged or merely picked. `register()` refines a grid spanning the
+    whole rotation group; if the top-k land on one orientation from different starts,
+    the pose is determined. If they are scattered, the scorer is choosing between
+    orientations it cannot distinguish and the winner is close to arbitrary.
+
+    Measured, same code path, same weights:
+
+        mustard0 (correct pose)   16/16 within 15 deg, median pairwise   0.29 deg
+        chair_4  (175.63 deg off)  2/16 within 15 deg, median pairwise 127.31 deg
+
+    Note this INVERTS the score-based reading: mustard0's scores are flatter (an exact
+    tie at the top, 91/252 within 1%) precisely because its hypotheses converged onto
+    the same pose. Ties among converged hypotheses mean agreement, not ambiguity.
+
+    Being map-free, this is also the check that can run on a scene with no prior — i.e.
+    a pre-flight test of whether an instance is poseable at all, before a registration
+    is spent on it.
+    """
+    if not agreement:
+        return True, "no agreement data (pre-r14 pose result) — check skipped"
+    k = agreement.get("k") or 0
+    clustered = agreement.get("clustered_within_15deg") or 0
+    pairwise = agreement.get("median_pairwise_deg")
+    frac = clustered / k if k else 0.0
+    ok = frac >= min_clustered_frac and (pairwise is None or pairwise <= max_pairwise_deg)
+    detail = (f"{clustered}/{k} of the top hypotheses within 15 deg of the best, "
+              f"median pairwise {pairwise:.2f} deg" if pairwise is not None else
+              f"{clustered}/{k} clustered")
+    return ok, detail
+
+
 def rotation_error_deg(R_est: np.ndarray, R_ref: np.ndarray) -> float:
     """Geodesic angle between two rotations, in degrees."""
     R_err = np.asarray(R_est, float) @ np.asarray(R_ref, float).T
@@ -196,7 +232,12 @@ def main() -> int:
         print(f"[4 pose ]  tracker self-consistency {result['world_spread_cm']:.2f} cm "
               f"(says it is steady, not that it is right)")
 
-    accepted = n_ok > len(checks) // 2
+    # The estimator's own self-agreement, which needs neither our map nor ground truth.
+    agree_ok, agree_detail = check_agreement(result.get("agreement"))
+    print(f"[4 pose ]  hypothesis agreement: {'ok' if agree_ok else 'SCATTERED'} — "
+          f"{agree_detail}")
+
+    accepted = n_ok > len(checks) // 2 and agree_ok
     refined = None
     if accepted or args.force:
         # Rebuild the target observation exactly as the other stages do, so the id and
@@ -224,7 +265,10 @@ def main() -> int:
               f"{refined.anchor_frame}")
     else:
         worst = sorted(checks, key=lambda c: -c.translation_cm)[0]
-        print(f"[4 pose ]  REFUSED — {'; '.join(worst.reasons)}")
+        why = list(worst.reasons)
+        if not agree_ok:
+            why.append(f"hypotheses did not converge ({agree_detail})")
+        print(f"[4 pose ]  REFUSED — {'; '.join(why)}")
         print("[4 pose ]  the position-only pose from stage 3 stands. It says nothing "
               "about rotation, which is better than saying something wrong.")
 
@@ -239,6 +283,8 @@ def main() -> int:
         "median_rotation_deg": float(np.median([c.rotation_deg for c in checks])),
         "thresholds": {"translation_cm": args.max_translation_cm,
                        "rotation_deg": args.max_rotation_deg},
+        "agreement_ok": bool(agree_ok), "agreement_detail": agree_detail,
+        "agreement": result.get("agreement"),
         "per_frame": [vars(c) for c in checks],
         "pose_world": refined.pose.tolist() if refined is not None else None,
         "anchor_frame": refined.anchor_frame if refined is not None else None,

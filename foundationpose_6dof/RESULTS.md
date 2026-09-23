@@ -42,7 +42,7 @@ verts / 9,657 faces, extents 1.573 × 1.168 × 0.986 m.
 | **world-frame spread** (self-consistency) | **2.08 cm** (3.13 cm on the r13 rerun) |
 | agreement with our segmentation centroid | **72.14 cm** apart (median 73.02 cm over 8 frames) |
 | **rotation error** vs `R_world_to_cam` | **175.63°** — measured directly |
-| scorer range over 252 rotation hypotheses | **1.75** (std 0.196); **48/252 within 1% of the top** |
+| hypothesis agreement, top-16 | **2/16 within 15°**, median pairwise **127.31°** |
 | frames passing the stage-4 gate | **0 / 8** |
 
 **The spread means less than it appears to.** Composing each tracked pose with its camera
@@ -91,21 +91,48 @@ pose, is flatter still:
 
 Scores are computed *after* refinement, so hypotheses that converge onto the same pose
 legitimately tie. A flat top means **agreement**, not ambiguity — the opposite of what was
-claimed. The discriminating quantity is whether the refined **poses** cluster, not whether
-their **scores** do; r14 measures pairwise geodesic angle among the top-16 instead.
+claimed.
+
+### The metric that does discriminate: pose clustering
+
+r14 measures the pairwise geodesic angle among the top-16 **refined poses**. Same runs,
+same weights, same code path:
+
+| | ours (`chair_4`) | mustard0 | ratio |
+|---|---|---|---|
+| median pairwise angle, top-16 | **127.31°** | **0.29°** | **440×** |
+| median vs top-1 | 113.01° | 1.36° | |
+| max vs top-1 | 178.46° | 1.80° | |
+| within 15° of top-1 | **2/16** | **16/16** | |
+| *(withdrawn)* within 1% of top score | 48/252 | 91/252 | — |
+
+mustard0's top-16 are **one orientation reached from sixteen different starts** — which is
+exactly why their scores tie. `chair_4`'s are scattered across 127°, so the winner is
+close to arbitrary and a near-180° answer is unremarkable.
+
+This is the only check in the stack that needs **neither our map nor ground truth**, so it
+doubles as a pre-flight test: it can say whether an instance is poseable at all before a
+registration is spent on it. It is now the fourth gate check in
+`pipeline/tools/e2e_pose.py`.
 
 *(An earlier revision of this page attributed the 72 cm to `reset_object` subtracting the
 mesh's bbox centre. `estimater.py:233` undoes that subtraction before returning, so the
 convention was never the cause — see `bug_log.txt` [4]. The failed fix is what produced
 the rotation measurement, so it is recorded rather than removed.)*
 
-**Why this is plausible but not yet attributed.** The mask is **695 px**, while a 1.58 m
-object at 2 m under fx = 535 should subtend roughly 410 px across — a one-sided Poisson
-shell seen through a sparse partial view carries little signal to fix an orientation. That
-is a hypothesis about *our input*, and the test that separates it from a broken port is
-upstream's own `demo_data/mustard0` (kernel r12). Until it runs, **no pose accuracy is
-claimed**, and `pipeline/tools/e2e_pose.py` refuses to admit the pose into the world
-model.
+**Attributed.** The mask is **695 px**, where a 1.58 m object at 2 m under fx = 535 should
+subtend roughly 410 px across — a one-sided Poisson shell seen through a sparse partial
+view, against mustard0's 3,252 px over a CAD mesh. **No pose accuracy is claimed on our
+own data**, and `pipeline/tools/e2e_pose.py` refuses to admit the pose into the world
+model: 0/8 frames corroborate and the hypotheses do not converge.
+
+**What would close it**, in order of expected effect:
+
+| lever | why | cost |
+|---|---|---|
+| a cleaner instance | `chair_4` is a 1.58 m *region*, not an object — over-segmentation is upstream of everything here | needs §3's recognition work, or ground truth |
+| denser fusion (smaller `--stride`) | bigger masks and a less ragged shell | TSDF memory |
+| multi-view registration | one 695 px view cannot fix an orientation a second view would | upstream supports it; our bundle already carries 8 poses |
 
 ## The bug that blocked this for three rounds
 
