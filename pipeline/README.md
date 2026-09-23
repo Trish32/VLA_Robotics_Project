@@ -48,8 +48,8 @@ RGB-D ──▶ ORB-SLAM3 / DROID-SLAM ──▶ TSDF fusion ──▶ OpenMask3
 | fuse | TSDF, keyframe-anchored, gravity-levelled | **133,928 points** over 103 frames |
 | segment | OpenMask3D — Mask3D + SAM + CLIP | **6 instances**, Mask3D scores 0.533–0.727 |
 | pose | FoundationPose | runs on a T4; **175.63° rotation error** vs our map — **gated out**, see below |
-| ground | scene graph → target | 5 nodes, 2 relations; `resolve("the chair")` → **`chair_4`** |
-| act | GR00T N1.6-3B | **16 steps × 29 DoF**, 4.4 s CPU |
+| ground | scene graph → target | 5 nodes, 3 relations from instance geometry; `resolve("the chair")` → **`chair_4`** |
+| act | GR00T N1.6-3B | **16 steps × 29 DoF**, 3.1 s CPU |
 
 **→ [Full numbers, ablations and what is *not* established](../RESULTS.md)**
 
@@ -85,6 +85,13 @@ rotation — a segmentation mask carries no orientation, and
 `observations.from_openmask3d` refuses to invent one rather than hand a planner an
 authoritative-looking wrong pose. A stage that admitted the pose anyway would be strictly
 worse than one that has no pose at all.
+
+**Relations come from geometry, not bounding boxes.** `inside` is decided by convex-hull
+containment and `near` by surface separation, which removed three spurious edges and
+recovered a true one. The prompt handed to the policy went from *"the chair is inside the
+desk, the chair is inside the person"* to *"the chair is near the desk"*. Neither change
+needed ground truth — whether a **label** is right does, but whether one instance's points
+lie inside another's does not. Detail in [Plan.md §4](../Plan.md).
 
 **Recognition is the weak stage.** Median top-1 CLIP margin is **0.011**; at that
 separation an argmax over a fixed vocabulary is close to arbitrary. Grounding no longer

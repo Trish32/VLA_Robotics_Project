@@ -131,7 +131,13 @@ def main() -> int:
         [labelled[i]["similarity"] for i in keep],
         anchor_frame=Frames.keyframe(0), stamp_ns=NS, registry=InstanceRegistry())
 
-    nodes = {n.node_id: n for n in to_scene_nodes(observations)}
+    # Hand the real point sets over so `inside` is decided on the instance geometry
+    # rather than on whether one coarse proposal's box happens to nest inside another's.
+    point_sets = {o.node_id: points[np.any([masks[i] for i in keep
+                                            if observations[keep.index(i)].node_id
+                                            == o.node_id], axis=0)]
+                  for o in observations}
+    nodes = {n.node_id: n for n in to_scene_nodes(observations, point_sets=point_sets)}
     graph = SceneGraph()
     for node in nodes.values():
         graph.upsert(node)

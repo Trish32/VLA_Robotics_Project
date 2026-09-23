@@ -107,10 +107,34 @@ class SceneNode:
     # PLACE nodes only: the enclosing place. Building -> floor -> room -> workspace.
     # The place hierarchy is a TREE (one parent), unlike the relation graph around it.
     place_parent: str | None = None
+    # Convex hull of the instance's points, in two forms, both optional. `inside` is
+    # decided from these when present and falls back to the bounding box when not.
+    #
+    # An AABB says "inside" whenever one coarse proposal's box sits within another's,
+    # which on a real scene is constantly and mostly wrongly: measured on
+    # freiburg3_walking_xyz it produced `the chair is inside the desk` for a chair whose
+    # points are 4.8% inside that desk. The hull is the smallest convex region the
+    # evidence supports, and it is CHEAP -- 35-80 vertices and 66-156 planes for
+    # instances of 382-6,694 points -- so nodes stay small enough to publish.
+    hull_vertices: np.ndarray | None = None   # (V, 3) in anchor_frame
+    hull_planes: np.ndarray | None = None     # (F, 4) outward half-spaces, Ax + b <= 0
+    # A capped, evenly-spread sample of the instance's points, for `near`.
+    #
+    # The hull cannot serve here: its vertices are by construction the points reaching
+    # FURTHEST toward a neighbour, so hull-to-hull distance is biased short and fired
+    # `near` on 11 of 15 pairs where the full point sets support 7. Interior samples do
+    # not have that bias. Capped at a couple of hundred points so a node stays publishable.
+    sample_points: np.ndarray | None = None   # (S, 3) in anchor_frame
 
     def __post_init__(self) -> None:
         self.pose = np.asarray(self.pose, dtype=np.float64).reshape(4, 4)
         self.extent = np.asarray(self.extent, dtype=np.float64).reshape(3)
+        if self.hull_vertices is not None:
+            self.hull_vertices = np.asarray(self.hull_vertices, float).reshape(-1, 3)
+        if self.hull_planes is not None:
+            self.hull_planes = np.asarray(self.hull_planes, float).reshape(-1, 4)
+        if self.sample_points is not None:
+            self.sample_points = np.asarray(self.sample_points, float).reshape(-1, 3)
         if not self.metric:
             # A non-metric pose is not a slightly worse pose, it is a pose in unknown
             # units. Letting it into the graph means every derived distance is wrong by
@@ -137,6 +161,41 @@ class SceneNode:
         """
         lo, hi = self.aabb()
         return bool(np.all(other.centre >= lo) and np.all(other.centre <= hi))
+
+    def hull_fraction_inside(self, other: "SceneNode", tol: float = 0.02) -> float:
+        """Fraction of THIS node's hull vertices lying inside `other`'s hull.
+
+        Testing vertices rather than every point is exact, not an approximation: a
+        convex hull is the convex combination of its vertices, so if every vertex is
+        inside a convex region then so is everything between them.
+
+        Returns NaN when either hull is missing, which the caller reads as "no hull
+        evidence" and falls back to the bounding box rather than silently answering 0.
+        """
+        if self.hull_vertices is None or other.hull_planes is None:
+            return float("nan")
+        d = self.hull_vertices @ other.hull_planes[:, :3].T + other.hull_planes[:, 3]
+        return float((d.max(axis=1) <= tol).mean())
+
+    def separation_from(self, other: "SceneNode", pct: float = 5.0) -> float:
+        """How far this node's surface actually is from `other`'s, in metres.
+
+        The `pct`-th percentile of per-point nearest-neighbour distance, not the minimum:
+        a single stray point from a ragged segmentation would otherwise put two objects
+        in contact. 0 means the two point sets interpenetrate.
+
+        Returns NaN when either node lacks samples, so the caller can fall back to
+        centre distance rather than treat "unknown" as "touching".
+        """
+        if self.sample_points is None or other.sample_points is None:
+            return float("nan")
+        if not len(self.sample_points) or not len(other.sample_points):
+            return float("nan")
+        # Brute force: both sides are capped at a couple of hundred points, so this is a
+        # small dense product and needs no spatial index.
+        d = np.linalg.norm(
+            self.sample_points[:, None, :] - other.sample_points[None, :, :], axis=-1)
+        return float(np.percentile(d.min(axis=1), pct))
 
     def age_s(self, now_ns: int) -> float:
         return (now_ns - self.stamp_ns) / NS_PER_S
@@ -210,7 +269,7 @@ class SceneGraph:
     # -------------------------------------------------------------- inference
 
     def infer_relations(self, now_ns: int, *, contact_tol_m: float = 0.04,
-                        near_m: float = 0.45) -> list[Relation]:
+                        near_m: float = 0.45, hull_frac: float = 0.95) -> list[Relation]:
         """Derive spatial predicates from cached geometry. Replaces prior relations.
 
         Recomputed rather than incrementally patched: objects move, and a stale `on`
@@ -242,18 +301,40 @@ class SceneGraph:
                     ))
                     continue
 
+                # INSIDE: the box test is only a cheap PREFILTER. Where hulls exist the
+                # claim has to survive them too, because an AABB says "inside" for any
+                # two coarse proposals whose boxes happen to nest -- which on real
+                # segmentations is most overlapping pairs.
                 if np.all(lo >= blo - contact_tol_m) and np.all(hi <= bhi + contact_tol_m):
-                    self.relations.append(Relation(
-                        obj.node_id, Predicate.INSIDE, base.node_id, now_ns,
-                        evidence="bounding box contained",
-                    ))
-                    continue
+                    frac = obj.hull_fraction_inside(base)
+                    if np.isnan(frac):
+                        self.relations.append(Relation(
+                            obj.node_id, Predicate.INSIDE, base.node_id, now_ns,
+                            evidence="bounding box contained (no hull evidence)",
+                        ))
+                        continue
+                    if frac >= hull_frac:
+                        self.relations.append(Relation(
+                            obj.node_id, Predicate.INSIDE, base.node_id, now_ns,
+                            evidence=f"{frac * 100:.0f}% of hull vertices contained",
+                        ))
+                        continue
+                    # Box said inside, hull disagreed. Fall through so the pair can
+                    # still earn a NEAR edge -- which is usually what it actually is.
 
-                distance = float(np.linalg.norm(obj.centre - base.centre))
-                if distance <= near_m:
+                # NEAR: surface separation where samples exist, centre distance only as
+                # a fallback. Centre distance asks the wrong question for extended
+                # objects -- a chair 7 cm from a desk has its centre 79 cm away, so the
+                # true relation was being missed while nothing useful replaced it.
+                sep = obj.separation_from(base)
+                if np.isnan(sep):
+                    sep = float(np.linalg.norm(obj.centre - base.centre))
+                    why = f"centres {sep:.3f} m apart (no sample points)"
+                else:
+                    why = f"surfaces {sep:.3f} m apart"
+                if sep <= near_m:
                     self.relations.append(Relation(
-                        obj.node_id, Predicate.NEAR, base.node_id, now_ns,
-                        evidence=f"centres {distance:.3f} m apart",
+                        obj.node_id, Predicate.NEAR, base.node_id, now_ns, evidence=why,
                     ))
 
         self.relations.extend(self._infer_containment(now_ns))

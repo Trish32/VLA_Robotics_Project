@@ -176,14 +176,73 @@ def refine_with_pose(
     )
 
 
-def to_scene_nodes(observations: list[Observation], *, surfaces=frozenset(
-        {"table", "floor", "shelf", "counter", "desk", "wall"})):
-    """Observations -> SceneNode list, ready for `SceneGraph.upsert`."""
+def convex_hull(points: np.ndarray) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    """(hull vertices, outward half-space planes) for a point set.
+
+    Returns (None, None) rather than raising when a hull is not defined — fewer than
+    four points, or points that are coplanar/collinear, which happens for a thin or
+    barely-observed instance. Callers treat a missing hull as "no evidence" and fall
+    back to the bounding box, so a degenerate instance loses precision but never
+    silently gains a wrong answer.
+    """
+    try:
+        from scipy.spatial import ConvexHull, QhullError
+    except ImportError:          # scipy is optional; the box path still works
+        return None, None
+    pts = np.asarray(points, float).reshape(-1, 3)
+    if len(pts) < 4:
+        return None, None
+    try:
+        h = ConvexHull(pts)
+    except (QhullError, ValueError):
+        return None, None
+    return pts[h.vertices], h.equations
+
+
+def downsample(points: np.ndarray, cap: int = 200, seed: int = 0) -> np.ndarray:
+    """An evenly-spread subset of at most `cap` points, for the `near` test.
+
+    Voxel-first so the sample follows the shape rather than the density: a face seen
+    from close up contributes thousands of points and would otherwise dominate a uniform
+    random draw, pulling the apparent surface toward whatever the camera happened to
+    dwell on.
+    """
+    pts = np.asarray(points, float).reshape(-1, 3)
+    if len(pts) <= cap:
+        return pts
+    lo, hi = pts.min(0), pts.max(0)
+    span = np.maximum(hi - lo, 1e-6)
+    # Aim for roughly `cap` occupied voxels: cap^(1/3) cells along each axis.
+    n = max(1, int(round(cap ** (1 / 3))))
+    key = np.floor((pts - lo) / span * n).astype(np.int64).clip(0, n - 1)
+    flat = (key[:, 0] * n + key[:, 1]) * n + key[:, 2]
+    _, first = np.unique(flat, return_index=True)
+    out = pts[np.sort(first)]
+    if len(out) > cap:
+        out = out[np.random.default_rng(seed).choice(len(out), cap, replace=False)]
+    return out
+
+
+def to_scene_nodes(observations: list[Observation], *,
+                   point_sets: dict[str, np.ndarray] | None = None,
+                   surfaces=frozenset(
+                       {"table", "floor", "shelf", "counter", "desk", "wall"})):
+    """Observations -> SceneNode list, ready for `SceneGraph.upsert`.
+
+    `point_sets` maps node_id -> that instance's points. Supplying it attaches a convex
+    hull to each node, which is what lets `inside` be decided on the geometry instead of
+    on nesting bounding boxes. Omitting it is supported and falls back to the box.
+    """
     from pipeline.identity import Frames
     from pipeline.scene_graph import NodeKind, SceneNode
 
-    return [
-        SceneNode(
+    nodes = []
+    for o in observations:
+        hv = hp = sp = None
+        if point_sets is not None and o.node_id in point_sets:
+            hv, hp = convex_hull(point_sets[o.node_id])
+            sp = downsample(point_sets[o.node_id])
+        nodes.append(SceneNode(
             node_id=o.node_id,
             kind=NodeKind.SURFACE if o.label in surfaces else NodeKind.OBJECT,
             label=o.label,
@@ -193,6 +252,8 @@ def to_scene_nodes(observations: list[Observation], *, surfaces=frozenset(
             extent=o.extent,
             stamp_ns=o.stamp_ns,
             clip_similarity=o.score,
-        )
-        for o in observations
-    ]
+            hull_vertices=hv,
+            hull_planes=hp,
+            sample_points=sp,
+        ))
+    return nodes

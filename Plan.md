@@ -130,24 +130,53 @@ accuracy is supportable, and none is made.
 
 ---
 
-## 4. Scene graph: `on` works, the rest is untested on real data
+## 4. Scene graph: relations now come from geometry, not bounding boxes
 
-`the monitor is on the desk` and `the chair is inside the desk` both fire now. But
-`the chair is inside the person` also fires, and that is not a real spatial claim — it
-is an artifact of axis-aligned boxes over heavily overlapping proposals.
+The prompt handed to the policy used to read:
 
-| | state |
-|---|---|
-| `on` | fires on real data, after gravity alignment |
-| `inside` | fires, but produces at least one nonsense edge from AABB overlap |
-| `near` | fires |
-| `part_of` / place hierarchy | unit-tested only; no real scene has places |
+> Scene: the chair is inside the desk, **the chair is inside the person**. Target: the chair.
 
-The honest fix for `inside` is a support test that fits a plane to the instance rather
-than trusting its bounding box. **Deliberately not implemented**: with no ground-truth
-instance labels there is no way to check whether the relations it produced were
-*correct*, and an `inside` edge a planner acts on is worse wrong than absent. It waits
-on §1 too.
+Both edges were artifacts of axis-aligned boxes over heavily overlapping proposals. It
+now reads:
+
+> Scene: **the chair is near the desk**. Target: the chair.
+
+**This did not need ground truth**, which is why it no longer waits on §1. Whether a
+label is *correct* needs ground truth; whether one instance's points lie inside
+another's is a geometric question the data already answers.
+
+| | decided by | state |
+|---|---|---|
+| `on` | support band + footprint overlap | fires on real data, after gravity alignment |
+| `inside` | **convex-hull containment** of the subject's hull vertices | 3 spurious edges removed |
+| `near` | **surface separation** (5th-pct nearest-neighbour), not centre distance | recovered a true edge the old rule missed |
+| `part_of` / place hierarchy | — | unit-tested only; no real scene has places |
+
+**`inside`.** Testing hull vertices is exact rather than approximate: a convex hull is
+the convex combination of its vertices, so if every vertex is inside a convex region,
+everything between them is too. Measured on the three pairs the box rule called `inside`:
+
+| pair | hull-vertex containment | verdict at 95% |
+|---|---|---|
+| chair ⊂ desk_5 | **11.6%** | decisively refuted |
+| desk_0 ⊂ desk_5 | 68.1% | refuted |
+| chair ⊂ person_2 | **89.9%** | refused, but borderline |
+
+The third is worth being precise about: `person_2` is a 4.1 m over-segmented region that
+very nearly does enclose the chair, so 89.9% is a *threshold* decision, not geometry
+flatly refuting it. What makes that edge read as nonsense is the **label** — §3's
+problem, not this one. The two were previously conflated.
+
+**`near`.** Centre distance asks the wrong question about extended objects: the chair
+sits **7 cm** from a desk and **79 cm** from its centre, so the true relation was missed
+while nothing replaced it. Box-gap distance is degenerate in the other direction — all
+15 pairs in this scene have overlapping boxes, so every pair would be "near". Surface
+separation between sampled points is the measure that discriminates: 7 of 15 pairs.
+
+**Cost.** Nodes carry the hull (35–80 vertices, 66–156 planes) plus a voxel-spread
+sample capped at 200 points: **4–8 KB per node**, small enough to publish. Nodes built
+without point sets keep the old box behaviour, so nothing that does not supply geometry
+changes.
 
 ---
 
