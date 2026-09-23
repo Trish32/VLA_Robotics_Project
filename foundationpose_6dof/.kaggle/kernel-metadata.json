@@ -1,0 +1,1 @@
+{"id":"trishli/foundationpose-nvdiffrast","title":"foundationpose-nvdiffrast","code_file":"fp.py","language":"python","kernel_type":"script","is_private":true,"enable_gpu":true,"enable_internet":true,"dataset_sources":["trishli/foundationpose-weights","trishli/foundationpose-bundle"],"competition_sources":[],"kernel_sources":[]}

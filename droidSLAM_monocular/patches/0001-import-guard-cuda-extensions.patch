@@ -1,0 +1,74 @@
+diff --git a/droid_slam/droid_net.py b/droid_slam/droid_net.py
+index 0e36031..f03aced 100644
+--- a/droid_slam/droid_net.py
++++ b/droid_slam/droid_net.py
+@@ -9,13 +9,38 @@ from modules.corr import CorrBlock
+ from modules.gru import ConvGRU
+ from modules.clipping import GradientClip
+ 
+-from lietorch import SE3
+-from geom.ba import BA
+-
+-import geom.projective_ops as pops
+-from geom.graph_utils import graph_to_edge_list, keyframe_indicies
+-
+-from torch_scatter import scatter_mean
++# PATCH: these were module-scope imports of CUDA-only extensions, so importing
++# droid_net.py at all required lietorch + droid_backends + torch_scatter — none of which
++# build on Apple Silicon. But DroidNet.__init__ touches none of them: it builds only
++# BasicEncoder / ConvGRU / UpdateModule / GraphAgg, all plain PyTorch. Guarding at the
++# use site therefore makes the checkpoint loadable locally while leaving the SLAM path
++# unchanged.
++#
++# scatter_mean IS substituted (exact index arithmetic, validated in tests/).
++# lietorch and BA are NOT: they resolve to raise-on-use placeholders, because a stub
++# returning plausible shapes would silently corrupt every pose. See ../compat.py.
++import sys as _sys
++from pathlib import Path as _Path
++
++_sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
++from compat import try_import_lietorch, try_import_scatter  # noqa: E402
++
++_lietorch, _HAS_LIETORCH = try_import_lietorch()
++SE3 = _lietorch.SE3 if _HAS_LIETORCH else _lietorch
++scatter_mean, _, _HAS_SCATTER = try_import_scatter()
++
++if _HAS_LIETORCH:
++    from geom.ba import BA
++    import geom.projective_ops as pops
++    from geom.graph_utils import graph_to_edge_list, keyframe_indicies
++else:  # the SLAM path needs lietorch; the network alone does not
++    from compat import missing_extension, LIETORCH_WHY
++
++    BA = missing_extension("geom.ba.BA", LIETORCH_WHY)
++    pops = missing_extension("geom.projective_ops", LIETORCH_WHY)
++    graph_to_edge_list = missing_extension("graph_to_edge_list", LIETORCH_WHY)
++    keyframe_indicies = missing_extension("keyframe_indicies", LIETORCH_WHY)
++# /PATCH
+ 
+ 
+ def cvx_upsample(data, mask):
+diff --git a/droid_slam/modules/corr.py b/droid_slam/modules/corr.py
+index 751ed35..7ce91e5 100644
+--- a/droid_slam/modules/corr.py
++++ b/droid_slam/modules/corr.py
+@@ -1,7 +1,18 @@
+ import torch
+ import torch.nn.functional as F
+ 
+-import droid_backends
++# PATCH: module-scope import of a CUDA-only extension blocked importing droid_net.py at
++# all, even though DroidNet.__init__ never constructs a CorrBlock. Resolves to a
++# raise-on-use placeholder off-CUDA -- correlation volumes are a real algorithm, so a
++# stub returning zeros would silently corrupt every correspondence. See ../../compat.py.
++import sys as _sys
++from pathlib import Path as _Path
++
++_sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
++from compat import try_import_droid_backends  # noqa: E402
++
++droid_backends, _HAS_DROID_BACKENDS = try_import_droid_backends()
++# /PATCH
+ 
+ class CorrSampler(torch.autograd.Function):
+ 

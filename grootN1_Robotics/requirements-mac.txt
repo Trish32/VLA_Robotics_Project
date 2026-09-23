@@ -1,0 +1,48 @@
+# GR00T N1.6 — Mac-local dev subset of upstream/pyproject.toml (commit 9b37aa1).
+#
+# Purpose: get `import gr00t` working and tiny-input unit tests running on MPS/CPU.
+# This is NOT the training environment — the cloud env installs upstream's pyproject
+# verbatim. Keep the pins identical to upstream where a package is present here, so a
+# local repro and a cloud repro differ only by the excluded set below.
+#
+# EXCLUDED (CUDA-compile-only, cannot build on Apple Silicon):
+#   flash-attn==2.7.4.post1   guarded upstream by is_flash_attn_2_available(); falls back to sdpa
+#   deepspeed==0.17.6         training-launcher only
+#   tensorrt>=10.14.1.48.post1, onnx  deployment/export only
+#   triton                    linux-aarch64 only, already conditional upstream
+#
+# torch is left unpinned: upstream wants 2.7.1 for CUDA parity, but locally we only need
+# a working MPS build. Version skew here is acceptable and expected — anything that
+# depends on the exact torch version must be verified on the cloud env, not this one.
+
+torch
+torchvision
+
+albumentations==1.4.18
+opencv-python-headless>=4.5,<4.13
+av==16.1.0
+diffusers==0.35.1
+dm-tree==0.1.8
+lmdb==1.7.5
+msgpack==1.1.0
+msgpack-numpy==0.4.8
+pandas==2.2.3
+peft==0.17.1
+termcolor==3.2.0
+transformers==4.51.3
+tyro==0.9.17
+click==8.1.8
+datasets==3.6.0
+cryptography==42.0.8
+einops==0.8.1
+gitpython==3.1.46
+gymnasium==1.2.2
+matplotlib==3.10.1
+numpy==1.26.4
+omegaconf==2.3.0
+scipy==1.15.3
+wandb==0.23.0
+pyzmq==27.0.1
+
+# dev
+pytest

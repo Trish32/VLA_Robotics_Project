@@ -1,0 +1,141 @@
+DROID-SLAM — bug log
+====================
+Upstream pinned at 2dfd39f (2025-05-04). Scope: inference reproduction only.
+
+
+[1] lietorch / droid_backends / torch_scatter imported at module scope
+-----------------------------------------------------------------------
+Date:        2026-08-19
+Fingerprint: ModuleNotFoundError: No module named 'lietorch' (then 'droid_backends')
+             on `from droid_net import DroidNet`.
+
+Cause:       Every file in droid_slam/ imports lietorch at module scope, and
+             modules/corr.py imports droid_backends. All three are CUDA-compiled and have
+             no Apple-Silicon build, so the network could not be imported at all — even
+             though `DroidNet.__init__` touches none of them. It constructs only
+             BasicEncoder / ConvGRU / UpdateModule / GraphAgg, all plain PyTorch.
+
+Fix:         Import-guard at the use site, per CLAUDE.md. `droidSLAM_monocular/compat.py` splits the
+             three deliberately:
+               - **torch_scatter IS substituted.** scatter_mean/scatter_sum are index
+                 arithmetic, not a CUDA algorithm; index_add_ reproduces them exactly.
+                 Same substitution already validated in QCNet_vl/utils/pyg_compat.py,
+                 including its `0 * inf = NaN` bug — hence the explicit non-finite test.
+               - **lietorch and droid_backends are NOT.** They resolve to objects that
+                 import cleanly and RAISE on first use. SE3/Sim3 tangent-space autograd
+                 and the dense-BA Schur solve are the system's actual algorithms; a stub
+                 returning plausible shapes would silently corrupt every pose.
+                 CLAUDE.md: "If it cannot run locally, it must raise locally."
+
+Status:      `DroidNet()` builds on Mac — 4.00M params, children [fnet, cnet, update].
+             Captured in patches/0001-import-guard-cuda-extensions.patch.
+
+
+VERIFICATION STATUS — what is local vs cloud-verified
+------------------------------------------------------
+Per CLAUDE.md, anything that cannot run locally must be marked as cloud-verified rather
+than quietly assumed. Current state of droidSLAM_monocular/tests (16 passed, 3 skipped):
+
+LOCALLY VERIFIED (CPU, no CUDA, no lietorch, no droid_backends):
+  - scatter_sum / scatter_mean against hand-computed values, including the dim=1 layout
+    GraphAgg actually uses, dim_size preservation, and a rejected multi-dim index;
+  - empty-group scatter_mean yields 0, not NaN — the QCNet `0 * inf` failure, guarded;
+  - scatter_* against the REAL torch_scatter wherever it is installed (importorskip);
+  - lietorch / droid_backends placeholders raise NotImplementedError on use, with a
+    message that says the omission is deliberate;
+  - DroidNet builds, and droid.pth loads at strict=True with 0 missing / 0 unexpected.
+
+NOT LOCALLY VERIFIED — CLOUD-VERIFIED ONLY (3 skipped tests, CUDA-gated):
+  - lietorch SE3 exp/log round-trip, including the small-angle branches at 1e-4 and 1e-8
+    where naive implementations return NaN at identity;
+  - droid_backends importability (i.e. that the extension was actually built).
+  These have NEVER been run. They are written and will execute the moment the suite runs
+  on a CUDA box; until then, no claim about lietorch or droid_backends numerics is
+  supported by anything in this repo.
+
+
+[2] droid.pth heads are 3-channel, the network is 2-channel — upstream SLICES them
+------------------------------------------------------------------------------------
+Date:        2026-08-19  (conclusion corrected same day — see "RESOLVED" below)
+Fingerprint: 0 missing / 0 unexpected / **4 shape mismatches**:
+                 update.delta.2.weight   ckpt (3,128,3,3)  vs code (2,128,3,3)
+                 update.delta.2.bias     ckpt (3,)         vs code (2,)
+                 update.weight.2.weight  ckpt (3,128,3,3)  vs code (2,128,3,3)
+                 update.weight.2.bias    ckpt (3,)         vs code (2,)
+
+What is verified:
+  - All 102 key NAMES match exactly in both directions — the port and the DataParallel
+    `module.` prefix stripping are correct. Only these four differ, and only in the
+    output-channel count of the two prediction heads.
+  - `droid_slam/droid_net.py` defines both heads as `nn.Conv2d(128, 2, 3, padding=1)`.
+  - That file is **byte-identical between 6463912 ("monocular release", 2021-09-01) and
+    HEAD (2dfd39f, 2025-05-04)** — `git diff 6463912 HEAD -- droid_slam/droid_net.py` is
+    empty, and only that one commit has ever touched it.
+  - `tools/download_model.sh` fetches gdown id 1PpqVt1H4maBa_GbPJp4NwxRsd9jk-elh, the
+    same file the README links and the one downloaded here (16MB, mtime 2021-09-01).
+
+So upstream's own script downloads a checkpoint whose two prediction heads are one
+channel wider than upstream's own network. Same class of defect as the DiffusionDrive
+week-1 finding (released config could not build with the released package).
+
+RESOLVED — and my first conclusion was WRONG.
+I recorded this as "the released checkpoint does not match the released code, gate blocked
+on upstream". That was incorrect. `droid_slam/droid.py::Droid.load_weights` handles it
+explicitly:
+
+    state_dict["update.weight.2.weight"] = state_dict["update.weight.2.weight"][:2]
+    state_dict["update.weight.2.bias"]   = state_dict["update.weight.2.bias"][:2]
+    state_dict["update.delta.2.weight"]  = state_dict["update.delta.2.weight"][:2]
+    state_dict["update.delta.2.bias"]    = state_dict["update.delta.2.bias"][:2]
+
+So the checkpoint really is 3-channel and the network really is 2-channel, but upstream
+keeps the first two channels and discards the third — deliberate, not a defect. Our loader
+simply had not replicated it. tools/load_checkpoint.py now applies the same slice and
+records that it did.
+
+The factual half of the original entry stands (the shapes differ; droid_net.py is
+byte-identical since 2021-09-01; the download script points at that file). Only the
+CONCLUSION was wrong.
+
+Lesson: before calling a widely-used upstream repo broken, read its own load path. The
+mismatch was real and visible in the state_dict; the inference that it made the checkpoint
+unusable came from checking the model definition but not the loader.
+
+STATUS: **FIDELITY GATE PASSED** — 0 missing / 0 unexpected / 0 shape mismatch, 102
+tensors / 4.00M params, and `load_state_dict(strict=True)` succeeds on CPU.
+
+
+[N] SLAM server: what is verified locally and what is not
+-----------------------------------------------------------
+Date:        2026-08-20
+
+`slam_server.py` fronts DROID-SLAM on the same ZMQ contract the ROS bridge uses for the
+two VLAs, so the container keeps one wire implementation for all three models.
+
+Locally verified (`tests/test_slam_server.py`, 27 passed, 3 skipped):
+  - image/intrinsics preprocessing against `demo.py::image_stream`, including the crop to
+    a multiple of 8 and the intrinsics rescale. The rescale is the one worth testing: skip
+    it and DROID still tracks, producing a trajectory quietly wrong by the scale factor;
+  - the intrinsics array is not mutated in place — the ROS node reuses one array per
+    frame, so an in-place scale would shrink it a little further on every call;
+  - the CUDA guard raises `CudaRequired` instead of importing a stub;
+  - `get_action` refuses rather than answering emptily, since `PolicyServer` wires that
+    endpoint unconditionally and a VLA node CAN reach this server on the wrong port;
+  - the reply's field names round-trip through the bridge's `slam_decode`.
+
+NOT verified locally, and it must not be claimed otherwise:
+  - tracking itself. `lietorch` and `droid_backends` are CUDA-compile-only, so the whole
+    `Droid.track` path is cloud-verified-pending. No local test touches it.
+  - the pose DIRECTION. `video.poses` is world-to-camera and `terminate()` returns
+    `camera_trajectory.inv()`, so this server inverts before replying — read from the
+    source, not measured. If the published odometry ever looks mirrored about the origin,
+    this inversion is the first thing to check.
+
+Verified by reading upstream, and pinned by a test so it cannot drift:
+  - the quaternion is scalar-LAST. `depth_video.py` initialises every pose to
+    `[0, 0, 0, 0, 0, 0, 1]`, which is the identity only if w is last. The same seven
+    numbers read scalar-first are a 180-degree rotation — still unit norm, nothing to
+    raise on. ROS is also scalar-last, so the four numbers carry across untouched.
+
+Open (needs a GPU): ATE on TUM-RGBD against the published number, which is the actual
+fidelity gate for this project. Nothing above substitutes for it.

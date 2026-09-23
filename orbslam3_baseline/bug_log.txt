@@ -1,0 +1,233 @@
+ORB-SLAM3 — bug log
+====================
+Upstream pinned at 4452a3c (UZ-SLAMLab/ORB_SLAM3, master).
+Scope: CPU SLAM baseline to compare against DROID-SLAM. Built, NOT reimplemented.
+
+
+[0] Why this is built rather than reimplemented
+-------------------------------------------------
+Date:        2026-09-21
+
+The reimplementation rule in ~/VLMProjects existed because MPS could not run custom CUDA
+ops. ORB-SLAM3 has no CUDA anywhere, so that rationale is entirely absent, and CLAUDE.md's
+Adaptation Rule applies unmodified.
+
+There is also a measurement argument. ORB-SLAM3's central claim is real-time tracking on
+a CPU (~30 FPS). A pure-Python port would run near 1 FPS, destroying the one axis where
+it beats DROID — a comparison with one side hobbled 30x is not a comparison.
+
+The payoff: this is the ONLY tracker in the repo that actually RUNS on the Mac.
+DROID's frontend is cloud-verified-pending and always will be locally.
+
+STATUS: **BUILDS ON APPLE SILICON** — libORB_SLAM3.dylib (3.46 MB), headless, with
+ZERO patches to upstream. Reproduce with tools/build_macos.sh.
+
+
+[1] `brew install opencv` builds OpenVINO from source
+--------------------------------------------------------
+Date:        2026-09-21
+Fingerprint: `brew install cmake eigen opencv glew boost` ran for 40+ minutes with no
+             output. The live process was
+             `cmake ... /openvino-2026.4.0/tools/ovc ...`.
+
+Cause:       Homebrew's opencv formula depends on openvino for DNN acceleration, and no
+             arm64 bottle was available, so it compiled it. ORB-SLAM3 uses core,
+             imgproc, features2d and calib3d — none of which involve the DNN module.
+
+Fix:         Killed it. All C++ dependencies now come from conda-forge as binaries:
+               conda create -n orbslam3_build -c conda-forge 'opencv>=4.8' 'eigen=3.4' \
+                   glew boost-cpp cmake pybind11 ninja
+
+Lesson:      A dependency that is "just an install" can be an hours-long source build
+             for a feature the project never calls. Check what is actually running
+             before waiting on it.
+
+
+[2] Homebrew now ships Eigen 5, and find_package accepts it
+--------------------------------------------------------------
+Date:        2026-09-21
+Fingerprint: `brew list --versions eigen` -> eigen 5.0.1.
+
+Cause:       ORB-SLAM3 is written against the Eigen 3 API and declares
+             `find_package(Eigen3 3.1.0 REQUIRED)`. That predicate is a MINIMUM, so it
+             accepts 5.0.1 happily; the failure then surfaces deep inside template
+             expansion, far from the version that caused it.
+
+Fix:         Pinned eigen=3.4 from conda-forge and passed EIGEN3_INCLUDE_DIR explicitly.
+
+Caught before it cost anything, by reading the version rather than assuming a version
+predicate means what it looks like.
+
+
+[3] CMake 4 rejects cmake_minimum_required(VERSION 2.6)
+----------------------------------------------------------
+Date:        2026-09-21
+Cause:       ORB_SLAM3, Thirdparty/g2o and Thirdparty/DBoW2 declare 2.8, 2.6 and 2.8.
+             CMake 4 removed compatibility below 3.5 and hard-errors.
+Fix:         `export CMAKE_POLICY_VERSION_MINIMUM=3.5` — CMake's own escape hatch, so
+             upstream needs no patch.
+
+
+[4] Pangolin's ffmpeg driver does not compile against ffmpeg 7
+-----------------------------------------------------------------
+Date:        2026-09-21
+Fingerprint: Pangolin failed at 81%:
+               ffmpeg_output.cpp:205: error: cannot initialize a parameter of type
+               'AVIOContext *' with an lvalue of type 'AVCodecContext *'
+
+Cause:       Pangolin 0.9.1's pango_video calls `avcodec_close()`, removed in ffmpeg 7.
+             conda-forge's ffmpeg merely being on the include path was enough for
+             `find_package(FFMPEG QUIET)` to enable a component ORB-SLAM3 never uses:
+             its Viewer only touches pango_display / pango_windowing / pango_opengl.
+
+Fix:         -DBUILD_PANGOLIN_FFMPEG=OFF, plus the other camera drivers conda-forge
+             might accidentally satisfy (realsense, openni, uvc, dc1394, ...).
+
+Note:        Pangolin is needed to LINK, not to run. `System(..., bUseViewer=false)` is
+             a runtime flag, so the SLAM server will be headless regardless.
+
+
+[5] DBoW2 includes boost/serialization without depending on it
+-----------------------------------------------------------------
+Date:        2026-09-21
+Fingerprint: BowVector.h:17: fatal error: 'boost/serialization/serialization.hpp' file
+             not found — with boost present in the conda prefix.
+
+Cause:       ORB-SLAM3's DBoW2 fork added boost serialization to the headers but never
+             added `find_package(Boost)` to Thirdparty/DBoW2/CMakeLists.txt. It works on
+             Linux because boost is in /usr/include. CMAKE_PREFIX_PATH does not help —
+             that feeds find_package, not bare #includes.
+
+Fix:         -DCMAKE_CXX_FLAGS="-isystem ${PREFIX}/include" and linker -L/-lboost_serialization.
+
+
+[6] Two GCC-only headers, fixed without patching upstream
+------------------------------------------------------------
+Date:        2026-09-21
+Fingerprint: DBoW2/FORB.cpp + src/ORBmatcher.cc: 'stdint-gcc.h' file not found
+             g2o/core/hyper_graph.h (and 4 more): 'tr1/unordered_map' file not found
+             g2o/core/robust_kernel.h:            'tr1/memory' file not found
+
+Cause:       `<stdint-gcc.h>` is a GCC internal header; `<tr1/...>` is pre-C++11 GCC.
+             clang's libc++ ships neither. g2o guards with `#ifdef _MSC_VER` only, so
+             every non-MSVC compiler is assumed to be GCC.
+
+Fix:         compat_include/ supplies all three as shims on the include path —
+             stdint-gcc.h -> <cstdint>, tr1/unordered_map and tr1/memory -> the standard
+             containers aliased into namespace std::tr1.
+
+             Injecting names into namespace std is formally UB. It is done narrowly and
+             deliberately: the alternative is patching nine vendored g2o headers, which
+             would put upstream/ out of sync with the pinned commit and break the
+             re-pull-and-diff workflow CLAUDE.md depends on.
+
+
+[7] Hardcoded .so suffix defeats the link on macOS
+-----------------------------------------------------
+Date:        2026-09-21
+Fingerprint: make[2]: *** No rule to make target
+             '.../Thirdparty/DBoW2/lib/libDBoW2.so', needed by 'libORB_SLAM3.dylib'.
+
+Cause:       ORB_SLAM3/CMakeLists.txt names its Thirdparty dependencies with a literal
+             `.so`; CMake emits `.dylib` on macOS. The extension is a naming convention
+             here, not a format difference.
+
+Fix:         Symlink lib<dep>.so -> lib<dep>.dylib after each Thirdparty build.
+
+Worth recording separately: the PARALLEL build hid this. With -j10, make printed
+`[ORB_SLAM3.dir/all] Error 2` with no error text at all — 2816 lines of log and not one
+"error:". Rebuilding with JOBS=1 produced the message immediately. When a parallel make
+fails silently, serialise before investigating anything else.
+
+
+[8] `-march=native` is FINE — a correction
+---------------------------------------------
+Date:        2026-09-21
+I assumed this would be a blocker; it is widely reported as one on older Apple
+toolchains. Tested directly: Apple clang 15.0.0 on arm64 accepts it. The RELEASE flags
+in CMakeLists.txt are left untouched.
+
+
+VERIFICATION STATUS
+---------------------
+LOCALLY VERIFIED:
+  - libORB_SLAM3.dylib, libDBoW2.dylib, libg2o.dylib and Pangolin all build on
+    Apple Silicon from the pinned commit, with upstream unmodified;
+  - ORBvoc.txt extracts.
+
+NOT YET DONE:
+  - the pybind11 shim exposing System::TrackRGBD on the same ZMQ `track` contract
+    droidSLAM_monocular/slam_server.py speaks, so ros2_bridge/slam_node drives either
+    backend from a launch-file switch;
+  - ATE on TUM-RGBD / EuRoC. When that runs, the alignment MUST match the gauge:
+    Sim3 (7-DoF, scale-free) for monocular, SE3 (6-DoF) for RGB-D. Mixing them hands one
+    system an unearned win. And ORB-SLAM3 is multithreaded and non-deterministic — the
+    paper reports a median of 5-10 runs, so a single-run number is noise.
+
+
+[9] The SIGBUS at frame ~700: OpenCV's thread pool, shared two ways
+---------------------------------------------------------------------
+Date:        2026-09-21
+Fingerprint: `Bus error: 10` at frame 700-827 of an 827-frame fr3/walking run, ONLY with
+             --reject-dynamic. The baseline run of the same 827 frames was clean.
+
+Two wrong diagnoses first, both worth recording:
+  (a) "cv2.findFundamentalMat raises instead of returning None." TRUE, and it was
+      killing the run at ~frame 200 — but a different bug. Fixed; see below.
+  (b) "the binding borrows numpy's buffer and ORB_SLAM3::Frame retains it." Also a real
+      latent use-after-free, and my code comment asserted the opposite
+      ("ORB-SLAM3 copies what it keeps"). Fixed with .clone(). The crash PERSISTED,
+      so this was not the cause either.
+
+Cause:       The binding releases the GIL around TrackRGBD, and ORB-SLAM3's LocalMapping
+             and LoopClosing threads keep running after it returns. So OpenCV is live on
+             those threads while Python calls cv2.ORB/BFMatcher on the main thread, and
+             both share OpenCV's internal parallel_for pool. SIGBUS rather than SIGSEGV
+             is the tell: a bad mapping, not a null dereference.
+
+Fix:         `cv2.setNumThreads(0)` on the Python side, plus hoisting the ORB detector
+             and matcher out of the per-frame loop (they were being reconstructed 827
+             times). This side of the work is single-frame and does not need the pool.
+
+Status:      827/827 frames, 0 lost, no fault. Cost: 38.1 -> 18.5 FPS, which is the
+             price of running ORB matching twice per frame (once for our geometric test,
+             once inside ORB-SLAM3) rather than of the threading change.
+
+Lesson:      Three candidate causes, two of them real bugs that were NOT this crash.
+             Fixing a plausible bug and re-running is not a diagnosis; faulthandler plus
+             a hypothesis about WHY it is SIGBUS specifically is.
+
+
+[10] MEASURED: dynamic-feature rejection on TUM fr3/walking_xyz
+-----------------------------------------------------------------
+Date:        2026-09-21
+Setup:       ORB-SLAM3 RGB-D, 827 associated frames. YOLOv8n + ByteTrack cached as a
+             separate pass (detect_dynamic.py), semantic-prior-guided epipolar + 3-D
+             rigid verification (dynamic_filter.py), confirmed-moving boxes masked.
+             ATE via SE(3) Umeyama — 6-DoF, scale FIXED, because RGB-D is metric.
+
+                              baseline    + rejection    reduction
+             ATE RMSE          80.92 cm     18.70 cm       76.9%
+             ATE mean          67.91 cm     11.25 cm       83.4%
+             ATE median        58.07 cm      7.60 cm       86.9%
+             ATE max          197.80 cm     99.74 cm       49.6%
+             frames tracked     827/827      827/827         —
+             FPS (CPU)             38.1         18.5      -51.4%
+
+             Detection pass: 14 tracks seen, 10 survived the >=3-frame consistency test,
+             4 boxes (0.4%) dropped as short-lived false positives.
+             Rejection: 250 confirmed-moving boxes masked across 229 of 827 frames;
+             8 frames were geometrically degenerate and were left unmasked.
+
+WHAT CANNOT BE CLAIMED FROM THIS RUN:
+  - "reduced tracking loss by Y%". Both runs tracked 827/827 with ZERO losses. RGB-D
+    ORB-SLAM3 does not lose tracking on this sequence, so there is no Y% to report. On
+    monocular fr3/walking it would be a different story, and that is a separate run.
+  - The 0.4% false-positive drop is ByteTrack's measured contribution here, and it is
+    small. The large ATE gain comes from the geometric verification, not from temporal
+    consistency. Attributing the 76.9% to the tracker would be wrong.
+  - Single run. ORB-SLAM3 is non-deterministic; the paper reports medians of several.
+
+Sanity check that the gain is real rather than an alignment artifact: the baseline
+trajectory is 17.03 m long, the filtered one 12.81 m, against 5.79 m of ground-truth
+path. The baseline's extra length IS the drift induced by tracking the walking people.

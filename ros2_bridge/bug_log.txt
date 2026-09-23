@@ -1,0 +1,185 @@
+ROS2 VLA bridge — bug log
+=========================
+One entry per root-caused bug: fingerprint, cause, fix, before/after.
+
+
+[1] PolicyClient.get_action sent the wrong payload shape — every networked call failed
+---------------------------------------------------------------------------------------
+Date:        2026-08-19
+Fingerprint: {"error": "LocalGr00tPolicy.get_action() got an unexpected keyword argument
+             'video'"} returned from the server; the client surfaced it as a dict with an
+             "error" key rather than raising, so the node saw a malformed action.
+
+Cause:       `wire.py::PolicyClient.get_action` sent the observation dict as the payload:
+
+                 call_endpoint("get_action", observation)
+
+             but upstream's `PolicyServer` dispatches with
+
+                 handler.handler(**request.get("data", {}))
+
+             so the observation's own top-level keys became keyword arguments —
+             `get_action(video=..., state=..., language=...)`. Upstream's own client
+             sends `{"observation": observation, "options": options}`, which unpacks to
+             `get_action(observation=..., options=...)`.
+
+             A second defect was hidden behind the first: `BasePolicy.get_action` returns
+             the tuple `(action, info)`, which msgpack delivers as a two-element LIST. The
+             node then did `action[k]` on a list and would have raised a TypeError, or
+             worse, indexed by position.
+
+Why it was  The bridge's existing tests are (a) a byte-level diff of our serializer
+not caught: against upstream's `MsgSerializer` — which passes, because the ENCODING was
+             always right — and (b) an end-to-end test against a hand-written fake server,
+             which agreed with whatever payload shape we sent it. A fake server validates
+             the client against itself. Neither test could see a protocol mismatch.
+
+Fix:         Send `{"observation": ..., "options": ...}` and unwrap the `(action, info)`
+             pair, returning the action. Verified against upstream's real `PolicyServer`
+             wrapping the genuine 3.29B N1.6 checkpoint on CPU —
+             `grootN1_Robotics/tests/test_ros_bridge_against_real_policy.py`, 4 tests.
+
+Lesson:      A fake server proves the wire FORMAT, never the wire PROTOCOL. Any client
+             built against a mock needs one test against the real peer before it is
+             trusted; here that was possible with no GPU because the policy runs on CPU
+             in ~3s.
+
+
+[2] LocalGr00tPolicy.get_action did not accept `options`
+--------------------------------------------------------
+Date:        2026-08-19
+Fingerprint: {"error": "LocalGr00tPolicy.get_action() got an unexpected keyword argument
+             'options'"} — surfaced only after [1] was fixed.
+
+Cause:       `grootN1_Robotics/policy.py` defined `get_action(self, observation)`, matching how we
+             called it directly, but `BasePolicy.get_action` is
+             `(observation, options=None)` and the server's client always sends an
+             `options` key. Direct in-process calls kept working, so the local end-to-end
+             test passed while every networked call failed.
+
+Fix:         Accept and forward `options`. Kept explicit rather than absorbed into
+             **kwargs, so the signature still documents the real contract.
+
+
+[3] The node sent an observation no real server accepts — flat, unnested, rank-short
+--------------------------------------------------------------------------------------
+Date:        2026-08-20
+Fingerprint: KeyError: 'video' inside Gr00tPolicy.check_observation, or from the DiVLA
+             server, ValueError: "observation has no 'video' entries". Never seen,
+             because the node had never been pointed at a real server with its OWN
+             observation.
+
+Cause:       `_build_observation` produced
+
+                 {"video.ego_view": (1, H, W, C),
+                  "state.single_arm": (1, D),
+                  "annotation.human.task_description": ["pick up the block"]}
+
+             Upstream `Gr00tPolicy.check_observation` requires
+
+                 {"video":    {"ego_view":    (B, T, H, W, C) uint8},
+                  "state":    {"single_arm":  (B, T, D)       float32},
+                  "language": {"annotation.human.task_description": [["..."]]}}
+
+             Three independent defects in one payload:
+               a. NESTED, not flat. The flat spelling does exist, but only inside
+                  `Gr00tSimPolicyWrapper`, which converts it before calling the policy.
+               b. keys inside each group are BARE. The `video.` prefix names the dataset
+                  column, not the modality key.
+               c. a batch axis AND a time axis. One live frame is (1, 1, H, W, C).
+             The language value was also `[str]` where `[[str]]` is required.
+
+Why it was  `test_node_endtoend.py`'s fake server never looked at the observation it was
+not caught: sent. This is the same failure mode as [1] and [2], for the third time: a
+             fake agrees with whatever you write it to agree with. Note that the DiVLA
+             server did NOT have this bug — it was written by mirroring upstream — so
+             two pieces of our own code disagreed about a shape neither had ever seen.
+
+Fix:         Encoding moved to `vla_bridge/obs_encode.py`, free of rclpy so it can be
+             handed to a real policy. Verified by
+             `grootN1_Robotics/tests/test_node_observation_against_real_policy.py`, which runs
+             the encoder's output through the genuine 3.29B policy's own
+             `check_observation`, and by
+             `DexVLA_Robotics/tests/test_ros_bridge_against_real_divla.py`, which sends it over
+             ZMQ to the real DiVLA model. The fake server in `test_node_endtoend.py` now
+             validates the observation the way upstream does, so it can no longer
+             rubber-stamp a wrong one.
+
+Also fixed   GR1's state is not one key. It is five — left_arm 7, left_hand 6,
+in passing:  right_arm 7, right_hand 6, waist 3 = 29 — and their widths are NOT on the
+             wire: `get_modality_config` carries key names and delta indices only (the
+             widths live in the checkpoint's statistics.json). The node had a single
+             `state_modality_key` parameter and could not have served the real
+             embodiment at all. Now `state_modality_keys` + `state_dims`, paired
+             positionally, refusing to guess an even split — a wrong split yields a
+             perfectly well-formed observation with hand joints in the arm slot.
+
+Lesson:      Same as [1], now with a corollary. "Run it against the real peer" has to
+             include the real INPUT: this bridge had been run against the real GR00T
+             server four times, but always with an observation built by
+             `run_policy_cpu.build_observation`, never the one the node itself builds.
+             The test peer was real; the test payload was not.
+
+
+[4] Server-side errors arrived looking like actions
+----------------------------------------------------
+Date:        2026-08-20
+Fingerprint: The node logs "no usable action keys in reply: ['error']" — technically
+             true, and it buries the server's actual message.
+
+Cause:       Upstream's `PolicyServer.run` catches every handler exception and replies
+             with an ordinary msgpack dict `{"error": str(e)}`. Our client only checked
+             for the bare `b"ERROR"` sentinel, so the error dict was returned to the
+             caller as if it were an action. Noted in passing in [1] and then not fixed.
+
+Fix:         `wire.py::call_endpoint` raises RuntimeError carrying the server's text and
+             the endpoint name whenever the reply is a dict whose ONLY key is "error" —
+             lone key, because a policy is free to return an `error` diagnostic
+             alongside a real action, and swallowing that would turn a working robot
+             into a silent one. `test/test_wire_client_errors.py`, 6 tests.
+
+Found by:    Pointing the bridge at the real DiVLA server and sending it a deliberately
+             flat observation. The expected RuntimeError did not arrive.
+
+
+[5] `ros2 run` and every launch file failed: no setup.cfg
+-----------------------------------------------------------
+Date:        2026-08-20
+Fingerprint: "package 'vla_bridge' found at '/ws/install/vla_bridge', but libexec
+             directory '/ws/install/vla_bridge/lib/vla_bridge' does not exist"
+
+Cause:       An ament_python package needs a setup.cfg pinning
+             `install_scripts=$base/lib/vla_bridge`. Without it setuptools puts
+             console_scripts in `install/vla_bridge/bin/`, where the ROS launcher does
+             not look. This package had none, so the `ros2 run` command in the README
+             had never worked — `colcon build` reported success throughout, because
+             building is not the same as being runnable.
+
+Fix:         Added setup.cfg. Verified by launching all three configurations.
+
+Also fixed   A `LaunchConfiguration` inside a Python list is written to the params file
+in passing:  as a bare string, so `camera_topics` was rejected with "expecting type
+             'STRING_ARRAY'"; `port` arrived as '5555' against an integer declaration;
+             and `publish_tf:=false` would have been the truthy string 'false'.
+             Substitutions carry no type. All three launch files now resolve their
+             arguments in an OpaqueFunction, producing real str/int/bool.
+
+
+[6] `pytest test` ran nothing and exited green
+------------------------------------------------
+Date:        2026-08-20
+Fingerprint: "1 skipped in 0.56s" in the ROS container, from a suite of 63 tests. Exit
+             code 0.
+
+Cause:       `test_wire_matches_upstream.py` used `pytest.importorskip("gr00t...")` at
+             module level. gr00t is absent from the ROS container by design (that is the
+             entire point of the torch-free bridge), so the Skipped exception was raised
+             during collection and took the whole directory with it. Naming a file
+             explicitly still worked, which is why it went unnoticed.
+
+Fix:         `pytestmark = pytest.mark.skipif(importlib.util.find_spec(...) is None)`,
+             which decides the same thing without raising mid-collection. 63 passed,
+             23 skipped.
+
+Lesson:      A green suite that skipped everything looks exactly like a green suite.
+             Check the test COUNT, not the colour.

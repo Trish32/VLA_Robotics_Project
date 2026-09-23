@@ -1,0 +1,306 @@
+OpenMask3D — bug log
+=====================
+Upstream pinned at 3bc3fc5 (OpenMask3D/openmask3d, main).
+Scope: open-vocabulary 3D instance segmentation. Adapted per CLAUDE.md, with ONE
+reimplementation — MinkowskiEngine — justified in [1].
+
+
+[1] MinkowskiEngine is a packaging dead end, not a porting preference
+----------------------------------------------------------------------
+Date:        2026-09-21
+Fingerprint: install_requirements.sh pins `torch==1.12.1+cu113`, requires
+             `openblas-devel` and a matching nvcc, and builds MinkowskiEngine from
+             git master. No Apple-Silicon build exists; the package is effectively
+             unmaintained and breaks against modern PyTorch.
+
+Why this is the exception to the Adaptation Rule:
+             Installing it would fork this repo onto torch 1.12 for one stage of one
+             project, and would make the mask stage undevelopable on the Mac — no
+             imports, no unit tests, no local dev at all. The rest of OpenMask3D (SAM,
+             CLIP, the feature extractor) is adapted unchanged.
+
+Scope of the replacement — `minkowski_compat.py`, exactly what Res16UNet34C and Mask3D
+call, nothing more:
+             MinkowskiConvolution (k=5/3/2/1), MinkowskiConvolutionTranspose (k=2 s=2),
+             BatchNorm, InstanceNorm, ReLU, Sigmoid, Linear, Avg/Sum/GlobalPooling,
+             me.cat, residual add. All HYPER_CUBE, D=3, dilation 1.
+             Method: coordinate hash + gather/matmul/scatter — the same substitution
+             already validated against spconv in ~/VLMProjects/bevfusion_vl.
+
+Status:      16 tests pass on CPU. The load-bearing one is dense equivalence: on a fully
+             occupied grid the sparse conv must equal nn.Conv3d exactly (atol 1e-10),
+             which pins hashing, gather/scatter, accumulation and boundary behaviour
+             against independently written reference code. Verified at k=3 and k=5.
+
+CONFIRMED ON HARDWARE (2026-09-21, Kaggle free T4, torch 2.10.0+cu128, Python 3.12):
+             MinkowskiEngine does not install. `pip install
+             git+https://github.com/NVIDIA/MinkowskiEngine.git` fails at
+             **egg_info** — before any compilation:
+
+                 × python setup.py egg_info did not run successfully.
+                 error: metadata-generation-failed
+
+             Failing at egg_info rather than at nvcc is the informative part: this is a
+             PACKAGING failure, not a CUDA one. Python 3.12 removed `distutils`, which
+             ME's 2021-era setup.py imports at module scope.
+
+             So the premise of this entry is now measured rather than argued: the
+             package cannot be installed on a current free-tier GPU image without
+             patching its build system. Reproduce with
+             tools/push_kaggle_verify.py (kernel trishli/minkowski-order-verify).
+
+FIVE ROUNDS ON A T4, EACH FINDING A DISTINCT CAUSE:
+
+  1-2  `pip install git+...` fails at egg_info. Cause hidden under pip's
+       <pip-setuptools-caller> boilerplate; my first two fixes targeted stdlib
+       distutils and were aimed at the wrong module.
+  3    Diagnostic round: ran `setup.py egg_info` DIRECTLY instead of through pip, which
+       finally printed the traceback:
+           setup.py:201  import numpy.distutils.system_info as sysinfo
+           ModuleNotFoundError: No module named 'numpy.distutils'
+       `numpy.distutils` was REMOVED in NumPy 2.0; Kaggle ships NumPy 2.x.
+  4    Fixed without patching: that import sits in the `else` branch taken only when
+       BLAS is unspecified, so `python setup.py install --blas=openblas` never reaches
+       it. Packaging cleared; the build reached actual compilation.
+  5    Compilation fails inside ME's own VENDORED third-party header:
+           src/3rdparty/cudf/detail/nvtx/nvtx3.hpp(747): error: expected a ";"
+           src/3rdparty/cudf/detail/nvtx/nvtx3.hpp(850): error: "nvtx3::argb" is ambiguous
+       An old bundled nvtx3 header that does not parse under CUDA 12.8's nvcc.
+
+CONCLUSION: on a current CUDA-12.8 / Python-3.12 image, MinkowskiEngine needs patches to
+BOTH its build system and a vendored header it does not maintain. Three of the four
+causes are in code the project inherited rather than wrote. This is the packaging
+argument in [1], measured to the bottom.
+
+The kernel ORDER claim in [2] therefore remains UNVERIFIED — but now for a fully
+characterised reason rather than an unexplored one. Next attempt should skip the build
+entirely: `src/kernel_region.hpp` is header-only template code whose includes are
+<algorithm>/<vector> plus coordinate.hpp/types.hpp/utils.hpp, with the .cuh includes
+behind a conditional. Compiling JUST the offset enumeration into a tiny pybind module
+answers the only question we need and sidesteps nvtx, BLAS and numpy.distutils together.
+
+
+[2] THREE ME conventions that a natural implementation gets wrong — all silent
+-------------------------------------------------------------------------------
+Date:        2026-09-21
+Source:      MinkowskiEngine/src/kernel_region.hpp, read directly. NOT measured.
+
+  (a) The FIRST spatial dimension varies FASTEST. The iterator increments `m_axis = 0`
+      innermost and carries upward. `torch.meshgrid(..., indexing="ij").reshape(-1, D)`
+      produces the opposite, which transposes the kernel about its diagonal.
+
+  (b) Odd kernels are centered, even kernels are NOT. `coordinate_at` uses
+      `(idx - k/2) * dilation * tensor_stride` for odd k but plain
+      `idx * dilation * tensor_stride` for even k. Res16UNet34C uses k=3 inside the
+      residual blocks and k=2 for every stride-2 down/upsample, so a uniformly centered
+      implementation is wrong on half the network.
+
+  (c) Offsets step by the INPUT tensor stride. ME stores coordinates in the original
+      system scaled by tensor_stride, so at stride 8 the adjacent voxel is 8 away.
+
+Why this matters more than it looks: all three permute or displace the kernel WITHOUT
+changing any shape. The checkpoint loads 0 missing / 0 unexpected and the network emits
+plausible garbage. This is the `bevfusion_vl` Swin PatchMerging unfold-order bug in a
+new costume, and that one cost det mAP 0.508 -> 0.578 to find.
+
+**RESOLVED 2026-09-21 — VERIFIED AGAINST UPSTREAM, ON A MAC, IN TWO SECONDS.**
+
+The dense-Conv3d oracle in [1] cannot catch an ordering error, because it builds its
+reference weight from the same offsets under test — any self-consistent order passes.
+Five Kaggle GPU rounds tried to settle it by building MinkowskiEngine and all five
+failed (see [1]).
+
+None of that was necessary. The enumeration lives in `src/kernel_region.hpp`, which is
+HEADER-ONLY template code, and `#ifndef CPU_ONLY` guards the two `.cuh` includes. So
+~25 lines compiled against upstream's own header, calling `coordinate_at()` for every
+kernel index, yields ME's ground truth with no CUDA, no GPU and no install — sidestepping
+nvtx3, BLAS and numpy.distutils in one move.
+
+    tools/verify_kernel_order.py
+
+    case                    ME volume   ours   verdict
+    k=3 stride=1                   27     27   MATCH
+    k=2 stride=1                    8      8   MATCH
+    k=5 stride=1                  125    125   MATCH
+    k=3 stride=8                   27     27   MATCH
+    k=2 stride=2                    8      8   MATCH
+
+195 offsets, exact agreement, covering all three conventions: axis 0 fastest, odd
+kernels centred while even kernels start at 0, offsets scaling by the tensor stride.
+
+LESSON: the question was "what order does ME use", and for five rounds I tried to answer
+it by making ME RUN. It only ever needed ME to COMPILE — and only one header of it. When
+a verification keeps failing on infrastructure, check whether the infrastructure is
+actually part of the question.
+
+Still open (but no longer blocking): a full Res16UNet34C activation diff against real ME
+would also confirm the gather/scatter under load. The dense-Conv3d oracle already covers
+that path at 1e-10, so this is corroboration rather than a gap.
+
+
+[3] The int64 overflow guard overflowed
+-----------------------------------------
+Date:        2026-09-21
+Fingerprint: test_manager_rejects_a_coordinate_box_that_overflows_the_hash — DID NOT
+             RAISE on a coordinate box of ~9.5e21, far above the 2**62 limit.
+
+Cause:       `CoordinateManager._bounds` computed the box volume with
+             `torch.prod(self._extent)` on an int64 tensor. For an oversized box that
+             product itself wraps, so the comparison `> 2**62` was made against a
+             wrapped — often small or negative — value. The guard against silent
+             overflow was silently overflowing.
+
+Fix:         `math.prod(self._extent.tolist())`; Python ints are arbitrary precision.
+
+Why it mattered: the guard exists because a wrapped hash key aliases two distinct voxels
+onto one row, so the convolution gathers the wrong features with nothing to raise on.
+A guard that cannot fire is worse than no guard, because it is documented as protection.
+
+Status:      Fixed, test passes. 16/16.
+
+
+[4] Two ME parameter-layout conventions, found by the checkpoint and nothing else
+-----------------------------------------------------------------------------------
+Date:        2026-09-21
+Fingerprint: Res16UNet34C built cleanly and 374/374 key NAMES matched in both
+             directions, but strict loading reported 9 then 2 shape mismatches:
+                 block2.0.downsample.0.kernel   ckpt (32, 64)   vs code (1, 32, 64)
+                 ... 9 of these, all residual downsample projections
+                 final.bias                     ckpt (1, 200)   vs code (200,)
+
+Cause:       Two special cases in MinkowskiEngine's parameter layout:
+               (a) at kernel_volume == 1 ME DROPS the kernel axis and stores
+                   (C_in, C_out), because a 1x1x1 convolution is a linear layer. Nine
+                   residual `downsample` projections and `mask_features_head` are
+                   exactly that.
+               (b) bias is stored (1, C_out), not (C_out,), so it broadcasts over the
+                   point axis of an (N, C) feature matrix.
+
+Fix:         `MinkowskiConvolution` allocates (C_in, C_out) when volume == 1 and
+             (1, C_out) for bias; `sparse_conv` restores the kernel axis with
+             unsqueeze(0), which is exact because kernel_offsets(1) is [[0, 0, 0]] —
+             one plane, one zero offset.
+
+Not a bug in the checkpoint: a third apparent mismatch, final.kernel (96, 200) vs
+(96, 20), was MY parameter. The released model is ScanNet200; I had built it with
+out_channels=20. Worth recording because it looked identical to a real layout error and
+was not one — the same trap as droidSLAM bug_log [2].
+
+Status:      **FIDELITY GATE (LOAD) PASSED.** Mask3D loads 0 missing / 0 unexpected /
+             0 shape mismatch at strict=True — 469 tensors, 39.66M params, of which
+             374 / 37.87M are the Res16UNet34C backbone.
+             tools/load_checkpoint.py reproduces it.
+
+Why this matters more than a checkbox: every convolution's parameter shape in this
+network is decided by our own kernel_offsets and layout choices. A wrong kernel volume,
+a transposed layout or a missed special case surfaces here as a mismatch rather than as
+a quietly worse metric. It does NOT validate offset ORDER — shapes are order-independent
+— which is why [2] stays open.
+
+
+[5] Inference speed: where the time actually goes, and what each fix bought
+-----------------------------------------------------------------------------
+Date:        2026-09-21
+Fingerprint: not a crash — a loop nesting in
+             mask_features_computation/features_extractor.py:136-148.
+
+                 for mask in range(num_masks):                  # ~110
+                     for view in topk_indices_per_mask[mask]:   # topk = 5
+                         self.predictor_sam.set_image(np_images[view])
+
+Cause:       `set_image` runs the SAM ViT-H IMAGE ENCODER (636M params). Nested this way
+             it fires num_masks * topk times, while there are only as many distinct
+             images as views actually selected. Neighbouring proposals overwhelmingly
+             pick the same best views, so the same frame is re-encoded once per proposal
+             that chose it. SAM's whole design is the opposite: encode once, then prompt
+             the ~4M-param decoder repeatedly.
+
+Fix:         fast_features.py — view-major traversal, plus three more changes. Upstream
+             is untouched; FastFeaturesExtractor wraps FeaturesExtractor and overrides
+             the one method.
+
+EFFECTS, measured separately (tools/analyze_speedup.py, 180 views / 110 proposals /
+topk=5). Call counts are EXACT and hardware-independent; the cost column is MODELLED
+from published forward-pass sizes, because SAM ViT-H cannot run here.
+
+    step                            SAM encoder   decoder   modelled   speedup
+    upstream (mask-major, ViT-H)            550      5500      604.5      1.0x
+    + loop inversion                        171      5500      225.4      2.7x
+    + batched prompt rounds                 171       550      218.0      2.8x
+    + fp16 autocast                         171       550      109.0      5.5x
+    + candidate gating                      114       170       64.3      9.4x
+    + MobileSAM encoder                     114       170        8.1     74.9x
+
+    EXACT: encoder passes 550 -> 114 (4.8x), decoder calls 5500 -> 170 (32.4x),
+           CLIP images 1650 -> 510 (3.2x).
+
+Reading of that table:
+  - Loop inversion is the single biggest EXACT win and costs nothing in accuracy.
+  - Batched prompt rounds barely move the modelled total (the decoder is ~0.15% of an
+    encoder pass) but remove 32x the kernel launches, which matters more in practice
+    than this FLOP-based model can show.
+  - fp16 is a flat 2x and is the least interesting.
+  - Candidate gating drops 76/110 proposals before any SAM pass. It compounds with the
+    inversion rather than adding to it.
+  - MobileSAM dominates everything else combined — and is the ONLY step that trades
+    accuracy. It must be measured against the ViT-H baseline on a real scene before
+    being believed, which the others do not.
+
+EXACTNESS IS TESTED, not asserted: tests/test_fast_features.py compares the view-major
+result against a mask-major reference for bitwise equality (np.array_equal), across the
+gated and ungated paths.
+
+Two things had to be true for that equality to hold, and neither was free:
+
+  (a) upstream's `run_sam` shuffles the GLOBAL numpy RNG to choose prompt points, so its
+      output depends on how many shuffles preceded it. Reordering the loop changes the
+      prompts — and upstream is not reproducible between two runs of ITSELF either.
+      `_best_mask_for` seeds a local default_rng on (mask, view), making prompts
+      order-independent and the stage reproducible.
+  (b) crops must enter the CLIP batch in the mask's own top-k order. Mean over a batch is
+      mathematically order-independent but NOT bitwise so; collecting crops in
+      view-sorted order produced a ~1e-8 discrepancy indistinguishable from a real bug.
+      Crops are keyed by (rank, level) and sorted before stacking.
+
+Also flagged: `optimize_gpu_usage` moves SAM (636M) and CLIP (304M) between CPU and GPU
+once PER MASK. Necessary on a 16GB T4, ruinous otherwise; the inversion reduces how often
+it happens.
+
+
+[6] A gating criterion that could never fire
+-----------------------------------------------
+Date:        2026-09-21
+Fingerprint: the analysis in [5] reported every one of 76 rejections with the same
+             reason — "larger than the gripper can span". `max_footprint_m` never fired.
+
+Cause:       `max_footprint_m` was 0.9 m while `max_extent_m` was 0.45 m. Any proposal
+             with a 0.9 m footprint necessarily exceeds 0.45 m on the diagonal, so the
+             earlier check always caught it first. Dead code.
+
+Fix:         Removed, with a comment recording why so it is not helpfully re-added.
+
+Same lesson as [3]: a guard that cannot fire is worse than no guard, because it is
+documented as protection. [3] was an overflow check that overflowed; this was a size
+check subsumed by the size check above it. Both were found by exercising the code and
+reading the output rather than by reading the code.
+
+
+VERIFICATION STATUS — local vs cloud
+--------------------------------------
+LOCALLY VERIFIED (CPU, no MinkowskiEngine, no CUDA):
+  - dense-grid equivalence vs nn.Conv3d at k=3 and k=5, atol 1e-10;
+  - boundary behaviour (missing neighbours contribute nothing);
+  - stride-2 coordinate quantisation, including FLOOR division for negative
+    coordinates — ScanNet clouds are centred, so half of every scene is negative and
+    truncation would fold the two sides of the origin together;
+  - encoder/decoder coordinate reuse, which is what makes `me.cat` defined at all;
+  - refusal paths: transpose with no registered map, cat on mismatched sets, hash
+    overflow;
+  - one forward+backward producing finite non-zero gradients (CLAUDE.md local bar).
+
+VERIFIED AGAINST UPSTREAM (no GPU needed — see [2]):
+  - kernel offset ORDER, all three conventions, 195 offsets exact.
+
+NOT VERIFIED:
+  - the published ScanNet200 metric. This is the actual fidelity gate and nothing above
+    substitutes for it.

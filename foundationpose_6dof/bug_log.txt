@@ -1,0 +1,117 @@
+FoundationPose — bug log
+=========================
+Upstream pinned at a1b694b (NVlabs/FoundationPose, main).
+Scope: 6-DoF pose estimation and tracking of the object OpenMask3D selects. Adapted, not
+reimplemented — its two networks are plain PyTorch and only the renderer is CUDA-only.
+
+
+[1] One file made the whole project unimportable off-GPU
+----------------------------------------------------------
+Date:        2026-09-21
+Fingerprint: `from estimater import FoundationPose` -> ModuleNotFoundError: nvdiffrast
+             (then pytorch3d), on a box with neither.
+
+Cause:       `Utils.py` imports `nvdiffrast.torch` and six `pytorch3d` symbols at module
+             scope, and `estimater.py` does `from Utils import *`. Upstream already
+             guards kornia, mycpp, bundlesdf.mycuda and warp in try/except — these two
+             are simply not guarded. The cost is out of proportion to the cause:
+             learning/models/{score,refine}_network.py and network_modules.py contain
+             ZERO CUDA-only imports, so the networks that ARE the checkpoint were
+             unreachable because of a rasteriser they never call at construction time.
+
+Fix:         `compat.py`, registry-hook style per CLAUDE.md — nothing patches vendored
+             source. Absent packages are registered in sys.modules as ModuleType
+             subclasses that import cleanly and raise on first attribute access. Same
+             contract as droidSLAM_monocular/compat.py gives lietorch.
+
+             The split is deliberate:
+               - nvdiffrast: CUDA-only rasteriser, no CPU build -> always stubbed here.
+               - pytorch3d: HAS a CPU build, just painful on Apple Silicon -> stubbed
+                 only when absent, so a machine that has it uses the real one.
+
+Why not a working stub: FoundationPose renders each pose hypothesis and scores it
+against the observed crop. A rasteriser returning zeros or plausible geometry yields a
+confident, wrong pose, and a pose is the canonical value nothing downstream can
+sanity-check. CLAUDE.md: "If it cannot run locally, it must raise locally."
+
+
+[2] The import guard reported its own stubs as the real thing
+---------------------------------------------------------------
+Date:        2026-09-21
+Fingerprint: `ensure_importable()` returned {'nvdiffrast': False, 'pytorch3d': False} on
+             the first call and {'nvdiffrast': True, 'pytorch3d': True} on the second.
+             `describe()` then printed "all render dependencies present; pose estimation
+             can actually run" on a Mac with no renderer.
+
+Cause:       `_available()` probed with `__import__(name)`. Once the placeholder is in
+             sys.modules that import SUCCEEDS, so every call after the first concluded
+             the real package was present.
+
+Fix:         `_available` now returns False when sys.modules holds a MissingModule for
+             that name, both before and after the probe.
+
+Why it mattered: this is the exact failure class the guard exists to prevent, reproduced
+inside the guard. "The checkpoint loaded" means something different on a box where the
+renderer was a placeholder, and the status dict is how a caller is supposed to tell.
+A status that lies is worse than no status.
+
+Status:      Fixed. 6 tests pass, including one that calls ensure_importable() twice and
+             asserts the status does not drift.
+
+
+[3] FIDELITY GATE (LOAD) PASSED
+---------------------------------
+Date:        2026-09-21
+
+    refiner (2023-10-28-18-33-37)  134 tensors, 16.83M params  -> 0 / 0 / 0
+    scorer  (2024-01-11-20-02-45)  116 tensors, 15.77M params  -> 0 / 0 / 0
+
+`strict=True` on CPU, with nvdiffrast and pytorch3d both stubbed. Reproduce with
+tools/load_checkpoint.py.
+
+Two things had to be right and neither is obvious:
+  - the networks are built DIRECTLY, not through PoseRefinePredictor/ScorePredictor.
+    Both predictors hardcode `.cuda()` and construct an H5 dataset on the way, so
+    neither can run off-GPU at all;
+  - the config defaults are copied from the predictors verbatim. `c_in`, `use_normal`
+    and `use_BN` change the first convolution and the norm layers, so a missing default
+    builds a genuinely different network and fails the load in a way that looks like a
+    checkpoint problem rather than a config one.
+
+One environment note worth keeping: the pip `open3d` wheel hardcodes an ABSOLUTE path to
+/opt/homebrew/opt/libusb/lib/libusb-1.0.0.dylib. Installing libusb into the conda env
+does not satisfy it; it needs `brew install libusb`. Nothing in the error message points
+at the wheel's own linkage, so it reads like a conda problem and is not one.
+
+
+VERIFICATION STATUS — local vs cloud
+--------------------------------------
+LOCALLY VERIFIED (CPU, no nvdiffrast, no pytorch3d):
+  - refiner and scorer load 0 missing / 0 unexpected / 0 shape mismatch (see [3]);
+  - the CUDA-only imports resolve, so `Utils`/`estimater` are importable;
+  - touching a stub raises NotImplementedError naming the omission as deliberate;
+  - the status dict is stable across repeated calls;
+  - real packages are never shadowed by a stub;
+  - dunder lookups raise AttributeError rather than returning a raising callable, so
+    the import machinery's own probes (__path__, __all__) still behave.
+
+NOT VERIFIED — CLOUD-VERIFIED-PENDING:
+  - anything involving rendering, registration or tracking. `register()` and
+    `track_one()` have never been executed here and cannot be.
+  - the published YCB-Video / LINEMOD ADD-S. That is the fidelity gate, and it needs
+    the CAD/model-based path — the TSDF-mesh path this pipeline uses downstream is an
+    application of a validated model, not a substitute for validating it.
+
+
+DESIGN NOTE — where the object mesh comes from
+------------------------------------------------
+`register(K, rgb, depth, ob_mask)` also needs `mesh`. Model-free mode would require
+BundleSDF's NeRF (bundlesdf/mycuda, an optional CUDA build upstream leaves commented out
+in build_all.sh). This pipeline avoids it: DROID-SLAM in RGB-D mode gives metric poses,
+those fuse into a TSDF, and OpenMask3D cuts a per-instance mesh out of the fused scene.
+So `mesh` comes from stages 1-3 and `ob_mask` is the instance mask projected into the
+frame. No CAD models, no BundleSDF.
+
+This only holds if DROID ran RGB-D. Monocular poses carry an arbitrary scale, which
+would make the mesh the wrong size and the pose confidently wrong — see the `metric`
+flag added to droidSLAM_monocular/slam_server.py for how that is surfaced.

@@ -1,0 +1,92 @@
+diff --git a/gr00t/model/modules/nvidia/Eagle-Block2A-2B-v2/modeling_siglip2.py b/gr00t/model/modules/nvidia/Eagle-Block2A-2B-v2/modeling_siglip2.py
+index 00bdff7..c5585c6 100644
+--- a/gr00t/model/modules/nvidia/Eagle-Block2A-2B-v2/modeling_siglip2.py
++++ b/gr00t/model/modules/nvidia/Eagle-Block2A-2B-v2/modeling_siglip2.py
+@@ -822,6 +822,45 @@ def eager_attention_forward(
+     return attn_output, attn_weights
+ 
+ 
++# PATCH: see the call site in Siglip2Attention.forward.
++#
++# Eagle packs several images into one sequence and communicates the layout ONLY through
++# `seq_len_list`. That argument is read exclusively by
++# `flash_attention_forward_for_packing`, which turns it into `cu_seqlens` for
++# `flash_attn_varlen_func` -- i.e. block-diagonal attention, one block per image. The
++# stock `sdpa_attention_forward` / `eager_attention_forward` accept `**kwargs`, silently
++# discard `seq_len_list`, and with `attention_mask=None` attend densely across the whole
++# packed sequence. That is a different function, not a numerical tolerance: image A's
++# tokens attend to image B.
++#
++# This builds the additive mask that reproduces the flash path's semantics for the dense
++# backends. Cost is O(total_len^2) and it rules out PyTorch's flash SDPA backend (which
++# supports only no-mask or causal), leaving memory-efficient -- acceptable, since the
++# sm_75 targets that need this path have no flash backend either way. At training scale
++# the better route is torch.nn.attention.flex_attention with a block mask, which skips
++# fully-masked blocks instead of materialising them.
++def _build_packing_mask(seq_len_list, total_len, device, dtype):
++    """Additive mask permitting attention only within an image. None if unnecessary."""
++    if not seq_len_list or len(seq_len_list) <= 1:
++        return None  # single image -- dense attention is already correct
++    if sum(seq_len_list) != total_len:
++        # Layout we do not understand; refuse rather than silently mask the wrong spans.
++        raise ValueError(
++            f"seq_len_list sums to {sum(seq_len_list)} but sequence length is "
++            f"{total_len}; cannot build the packing mask"
++        )
++    mask = torch.full((total_len, total_len), torch.finfo(dtype).min,
++                      device=device, dtype=dtype)
++    start = 0
++    for n in seq_len_list:
++        mask[start:start + n, start:start + n] = 0.0
++        start += n
++    return mask[None, None]
++
++
++# /PATCH
++
++
+ def _apply_rope_input_validation(x, freqs_cis):
+     assert x.ndim == freqs_cis.ndim + 1, (x.shape, freqs_cis.shape)
+     assert x.shape[:-2] == freqs_cis.shape[:-1], (x.shape, freqs_cis.shape)
+@@ -949,7 +988,16 @@ class Siglip2Attention(nn.Module):
+                 )
+             seq_len_list = [mapper[i] for i in range(len(mapper))]
+ 
+-        attention_mask = None
++        # PATCH: was an unconditional `attention_mask = None`, which made the dense
++        # backends attend across image boundaries -- see _build_packing_mask above.
++        # The flash path still gets None and reads seq_len_list itself.
++        if self.config._attn_implementation == "flash_attention_2":
++            attention_mask = None
++        else:
++            attention_mask = _build_packing_mask(
++                seq_len_list, seq_length, queries.device, queries.dtype
++            )
++        # /PATCH
+         attn_output, attn_weights = attention_interface(
+             self,
+             queries,
+@@ -1454,17 +1502,13 @@ class Siglip2PreTrainedModel(PreTrainedModel):
+             nn.init.xavier_uniform_(module.probe.data)
+             nn.init.xavier_uniform_(module.attention.in_proj_weight.data)
+             nn.init.zeros_(module.attention.in_proj_bias.data)
+-        elif isinstance(module, Siglip2Model):
+-            logit_scale_init = torch.log(torch.tensor(1.0))
+-            module.logit_scale.data.fill_(logit_scale_init)
+-            module.logit_bias.data.zero_()
+-        elif isinstance(module, Siglip2ForImageClassification):
+-            nn.init.normal_(
+-                module.classifier.weight,
+-                std=self.config.vision_config.hidden_size**-0.5
+-                * self.config.initializer_factor,
+-            )
++        # PATCH: upstream's chain also tested `Siglip2Model` and
++        # `Siglip2ForImageClassification`, but this file is the vision-only subset of
++        # HF's siglip2 and never defines either class -- so weight init raised
++        # NameError for every module that reached this far down the chain. Dropped
++        # rather than stubbed: there is nothing here for them to initialise.
+         elif isinstance(module, (nn.Linear, nn.Conv2d)):
++            # /PATCH
+             lecun_normal_(module.weight)
+             if module.bias is not None:
+                 nn.init.zeros_(module.bias)

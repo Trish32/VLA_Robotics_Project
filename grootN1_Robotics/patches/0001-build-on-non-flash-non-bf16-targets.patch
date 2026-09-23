@@ -1,0 +1,119 @@
+diff --git a/gr00t/model/modules/eagle_backbone.py b/gr00t/model/modules/eagle_backbone.py
+index 6424dda..a634508 100755
+--- a/gr00t/model/modules/eagle_backbone.py
++++ b/gr00t/model/modules/eagle_backbone.py
+@@ -1,4 +1,5 @@
+ import os
++import warnings
+ 
+ import torch
+ from transformers import AutoConfig, AutoModel
+@@ -38,13 +39,28 @@ class EagleBackbone(torch.nn.Module):
+             extra_kwargs["torch_dtype"] = torch.bfloat16
+ 
+         if model_name == "nvidia/Eagle-Block2A-2B-v2":
+-            assert use_flash_attention, (
+-                "nvidia/Eagle-Block2A-2B-v2 requires flash attention by default"
+-            )
+-            assert load_bf16, "nvidia/Eagle-Block2A-2B-v2 requires bfloat16 by default"
+             eagle_path = os.path.join(os.path.dirname(__file__), "nvidia", "Eagle-Block2A-2B-v2")
+             config = AutoConfig.from_pretrained(eagle_path, trust_remote_code=True)
++            # PATCH: upstream hard-asserts flash-attn AND bf16 here. Both require
++            # sm_80+, which excludes the T4 (sm_75) this repo actually trains on and
++            # excludes CPU/MPS entirely -- so the released code cannot be built at all
++            # on our targets. SDPA computes the same attention, and dtype is a
++            # precision choice rather than a correctness one, so honour an explicit
++            # opt-out instead of refusing to construct. Default is unchanged.
++            attn = "flash_attention_2" if use_flash_attention else "sdpa"
++            config._attn_implementation = attn
++            config.text_config._attn_implementation = attn
++            config.vision_config._attn_implementation = attn
++            if not (use_flash_attention and load_bf16):
++                warnings.warn(
++                    f"Eagle-Block2A-2B-v2 built with attn={attn}, load_bf16={load_bf16}; "
++                    "upstream ships flash_attention_2 + bfloat16. Numerics must be "
++                    "re-checked against the flash path on CUDA before any metric is "
++                    "trusted.",
++                    stacklevel=2,
++                )
+             self.model = AutoModel.from_config(config, trust_remote_code=True)
++            # /PATCH
+         else:
+             raise ValueError(f"Model {model_name} not supported")
+ 
+diff --git a/gr00t/model/modules/nvidia/Eagle-Block2A-2B-v2/modeling_eagle3_vl.py b/gr00t/model/modules/nvidia/Eagle-Block2A-2B-v2/modeling_eagle3_vl.py
+index e9201f6..b2002d6 100644
+--- a/gr00t/model/modules/nvidia/Eagle-Block2A-2B-v2/modeling_eagle3_vl.py
++++ b/gr00t/model/modules/nvidia/Eagle-Block2A-2B-v2/modeling_eagle3_vl.py
+@@ -35,6 +35,27 @@ from collections import defaultdict
+ 
+ logger = logging.get_logger(__name__)
+ 
++
++# PATCH: see the call sites below. Upstream asserted flash_attention_2 exactly;
++# this widens it to the implementations transformers supports for these models,
++# so the backbone can be built on CPU/MPS/T4 for local correctness work.
++_SUPPORTED_ATTN = ("flash_attention_2", "sdpa", "eager")
++
++
++def _assert_supported_attn(name: str, impl: str) -> None:
++    assert impl in _SUPPORTED_ATTN, (
++        f"{name} attn_implementation must be one of {_SUPPORTED_ATTN}, got {impl!r}"
++    )
++    if impl != "flash_attention_2":
++        logger.warning_once(
++            f"{name} is running with attn_implementation={impl!r}; upstream ships "
++            "flash_attention_2. Same math, different kernel -- but re-check numerics "
++            "against the flash path on CUDA before trusting a metric."
++        )
++
++
++# /PATCH
++
+ # copy from https://github.com/huggingface/transformers/blob/main/src/transformers/models/llava_onevision/modeling_llava_onevision.py#L241C1-L280C1
+ EAGLE3_VL_START_DOCSTRING = r"""
+     This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
+@@ -106,11 +127,19 @@ class Eagle3_VLForConditionalGeneration(Eagle3_VLPreTrainedModel, GenerationMixi
+             if config.vision_config.model_type == "intern_vit_6b":
+                 self.vision_model = InternVisionModel(config.vision_config)
+             elif config.vision_config.model_type == "siglip_vision_model":
+-                config.vision_config._attn_implementation = "flash_attention_2"
++                # PATCH: was an unconditional overwrite to "flash_attention_2", which
++                # silently discarded a caller's sdpa/eager choice. Respect an explicit
++                # setting; fall back to flash only when nothing was asked for.
++                config.vision_config._attn_implementation = (
++                    getattr(config, "_attn_implementation", None) or "flash_attention_2"
++                )
+                 self.vision_model = SiglipVisionModel(config.vision_config)
+             elif config.vision_config.model_type == "siglip2_vision_model":
+-                config.vision_config._attn_implementation = "flash_attention_2"
++                config.vision_config._attn_implementation = (
++                    getattr(config, "_attn_implementation", None) or "flash_attention_2"
++                )
+                 self.vision_model = Siglip2VisionModel(config.vision_config)
++                # /PATCH
+             elif config.vision_config.model_type == "radio":
+                 self.vision_model = RADIOModel(config.vision_config)
+ 
+@@ -122,15 +151,15 @@ class Eagle3_VLForConditionalGeneration(Eagle3_VLPreTrainedModel, GenerationMixi
+             elif config.text_config.architectures[0] == "Phi3ForCausalLM":
+                 self.language_model = Phi3ForCausalLM(config.text_config)
+             elif config.text_config.architectures[0] == "Qwen2ForCausalLM":
+-                assert (
+-                    config.text_config._attn_implementation == "flash_attention_2"
+-                ), f"Qwen2 must use flash_attention_2 but got {config.text_config._attn_implementation}"
++                # PATCH: assert relaxed to the set transformers actually implements.
++                # flash_attention_2 stays the default; sdpa/eager are the CPU/MPS/T4
++                # paths and compute the same attention.
++                _assert_supported_attn("Qwen2", config.text_config._attn_implementation)
+                 self.language_model = Qwen2ForCausalLM(config.text_config)
+             elif config.text_config.architectures[0] == "Qwen3ForCausalLM":
+-                assert (
+-                    config.text_config._attn_implementation == "flash_attention_2"
+-                ), f"Qwen3 must use flash_attention_2 but got {config.text_config._attn_implementation}"
++                _assert_supported_attn("Qwen3", config.text_config._attn_implementation)
+                 self.language_model = Qwen3ForCausalLM(config.text_config)
++                # /PATCH
+             else:
+                 raise NotImplementedError(
+                     f"{config.text_config.architectures[0]} is not implemented."

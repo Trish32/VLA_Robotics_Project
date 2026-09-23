@@ -1,0 +1,54 @@
+[{"stream_name":"stdout","time":7.212317898,"data":"==============================================================================\n"}
+,{"stream_name":"stdout","time":7.5193086220000005,"data":"torch 2.10.0+cu128 | cuda True | Tesla T4\n"}
+,{"stream_name":"stdout","time":7.519365495,"data":"==============================================================================\n"}
+,{"stream_name":"stdout","time":7.519465583,"data":"[install] openblas ...\n"}
+,{"stream_name":"stdout","time":16.358779085,"data":"[install] openblas rc=0\n"}
+,{"stream_name":"stdout","time":16.35882105,"data":"    ok\n"}
+,{"stream_name":"stdout","time":16.358832976,"data":"[install] clone ...\n"}
+,{"stream_name":"stdout","time":17.425422307,"data":"[install] clone rc=0\n"}
+,{"stream_name":"stdout","time":17.425452362,"data":"    cloned\n"}
+,{"stream_name":"stdout","time":17.425457963,"data":"[install] build --blas=openblas ...\n"}
+,{"stream_name":"stdout","time":71.507207047,"data":"[install] build --blas=openblas rc=0\n"}
+,{"stream_name":"stdout","time":71.507266722,"data":"    242:/tmp/ME/src/3rdparty/cudf/detail/nvtx/nvtx3.hpp(747): error: \"nvtx3::domain\" is ambiguous\n"}
+,{"stream_name":"stdout","time":71.507274686,"data":"    243-  inline domain const\u0026 domain::get\u003cdomain::global\u003e()\n"}
+,{"stream_name":"stdout","time":71.507286743,"data":"    244-         ^\n"}
+,{"stream_name":"stdout","time":71.507292685,"data":"    245-\n"}
+,{"stream_name":"stdout","time":71.507297773,"data":"    246:/tmp/ME/src/3rdparty/cudf/detail/nvtx/nvtx3.hpp(747): error: \"nvtx3::domain\" is ambiguous\n"}
+,{"stream_name":"stdout","time":71.50730364,"data":"    247-  inline domain const\u0026 domain::get\u003cdomain::global\u003e()\n"}
+,{"stream_name":"stdout","time":71.507308833,"data":"    248-                       ^\n"}
+,{"stream_name":"stdout","time":71.507313819,"data":"    249-\n"}
+,{"stream_name":"stdout","time":71.507318737,"data":"    250:/tmp/ME/src/3rdparty/cudf/detail/nvtx/nvtx3.hpp(747): error: expected a \";\"\n"}
+,{"stream_name":"stdout","time":71.5073239,"data":"    251-  inline domain const\u0026 domain::get\u003cdomain::global\u003e()\n"}
+,{"stream_name":"stdout","time":71.507329919,"data":"    252-                                                 ^\n"}
+,{"stream_name":"stdout","time":71.50733499,"data":"    253-\n"}
+,{"stream_name":"stdout","time":71.507339821,"data":"    254-/tmp/ME/src/3rdparty/cudf/detail/nvtx/nvtx3.hpp(780): warning #12-D: parsing restarts here after previous syntax error\n"}
+,{"stream_name":"stdout","time":71.507345137,"data":"    255-  };\n"}
+,{"stream_name":"stdout","time":71.507350542,"data":"    256-   ^\n"}
+,{"stream_name":"stdout","time":71.507355375,"data":"    257-\n"}
+,{"stream_name":"stdout","time":71.507360817,"data":"    258-Remark: The warnings can be suppressed with \"-diag-suppress \u003cwarning-number\u003e\"\n"}
+,{"stream_name":"stdout","time":71.50736654,"data":"    259-\n"}
+,{"stream_name":"stdout","time":71.507371736,"data":"    260-/tmp/ME/src/3rdparty/cudf/detail/nvtx/nvtx3.hpp(850): error: \"nvtx3::argb\" is ambiguous\n"}
+,{"stream_name":"stdout","time":71.507376765,"data":"    261-    constexpr color(argb argb) noexcept\n"}
+,{"stream_name":"stdout","time":71.507381861,"data":"    262-                    ^\n"}
+,{"stream_name":"stdout","time":71.507387207,"data":"    --- last 8 lines ---\n"}
+,{"stream_name":"stdout","time":71.507392012,"data":"                  ^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stdout","time":71.50739728799999,"data":"      File \"/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py\", line 900, in unix_wrap_ninja_compile\n"}
+,{"stream_name":"stdout","time":71.507425556,"data":"        _write_ninja_file_and_compile_objects(\n"}
+,{"stream_name":"stdout","time":71.507430457,"data":"      File \"/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py\", line 2297, in _write_ninja_file_and_compile_objects\n"}
+,{"stream_name":"stdout","time":71.507434817,"data":"        _run_ninja_build(\n"}
+,{"stream_name":"stdout","time":71.50743861,"data":"      File \"/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py\", line 2710, in _run_ninja_build\n"}
+,{"stream_name":"stdout","time":71.507442837,"data":"        raise RuntimeError(message) from e\n"}
+,{"stream_name":"stdout","time":71.50744725,"data":"    RuntimeError: Error compiling objects for extension\n"}
+,{"stream_name":"stdout","time":71.507741734,"data":"[install] still not importable: No module named 'MinkowskiEngine'\n"}
+,{"stream_name":"stdout","time":71.507756321,"data":"\n"}
+,{"stream_name":"stdout","time":71.507760597,"data":"RESULT: ME_UNBUILDABLE\n"}
+,{"stream_name":"stdout","time":71.507764316,"data":"MinkowskiEngine could not be built on this image. That is the very reason\n"}
+,{"stream_name":"stdout","time":71.507768566,"data":"minkowski_compat.py exists; record it in bug_log.txt [1] as supporting\n"}
+,{"stream_name":"stdout","time":71.507772602,"data":"evidence, and the kernel ORDER claim in [2] stays unverified.\n"}
+,{"stream_name":"stderr","time":74.045113813,"data":"/usr/local/lib/python3.12/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":74.045146774,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":74.335737406,"data":"/usr/local/lib/python3.12/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":74.335762166,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":74.945493488,"data":"[NbConvertApp] Converting notebook __script__.ipynb to html\n"}
+,{"stream_name":"stderr","time":76.297527999,"data":"[NbConvertApp] Writing 389534 bytes to __results__.html\n"}
+]

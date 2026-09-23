@@ -1,0 +1,249 @@
+GR00T N1.6 — bug log
+====================
+One entry per root-caused bug: fingerprint, cause, fix, metric before/after.
+Upstream pinned at n1d6 @ 9b37aa1. All upstream edits captured in patches/.
+
+
+[1] Eagle backbone cannot be constructed without flash-attn AND bf16
+--------------------------------------------------------------------
+Date:        2026-08-17
+Fingerprint: AssertionError: nvidia/Eagle-Block2A-2B-v2 requires flash attention by default
+             AssertionError: nvidia/Eagle-Block2A-2B-v2 requires bfloat16 by default
+             (gr00t/model/modules/eagle_backbone.py, EagleBackbone.__init__)
+
+Cause:       Two hard asserts gate construction of the only supported backbone. Both
+             requirements are sm_80+: flash-attn v2 needs Ampere, and bf16 needs Ampere.
+             This is not just a Mac problem — it excludes the **T4 (sm_75)** that this
+             repo's compute profile targets, so the released code cannot be built on
+             either of our two platforms. Three further layers re-impose flash-attn
+             below the assert:
+               - modeling_eagle3_vl.py unconditionally overwrote
+                 `config.vision_config._attn_implementation = "flash_attention_2"`,
+                 discarding any caller choice;
+               - it then asserted `text_config._attn_implementation == "flash_attention_2"`
+                 for Qwen2/Qwen3;
+               - config.json ships `_attn_implementation: flash_attention_2`.
+             Note `AutoModel.from_config(...)` ignores the `extra_kwargs` dict that
+             eagle_backbone.py builds, so `attn_implementation` never reached the model
+             by that route at all — the config is the only channel that works.
+
+Fix:         Honour an explicit opt-out at all four layers, with upstream's behaviour
+             unchanged as the default. `use_flash_attention=False` now selects "sdpa"
+             and threads it into `config`, `config.text_config` and
+             `config.vision_config`; the Qwen assert widened to the set transformers
+             actually implements ("flash_attention_2", "sdpa", "eager"); a warning
+             fires on any non-flash build. SDPA is the same attention math as flash-attn
+             — a different kernel and memory schedule, not a different function.
+
+Status:      Backbone builds on CPU (852.6M params at select_layer=2). The full 3.29B
+             model builds and passes the checkpoint gate. **Numerics of the sdpa path
+             vs the flash path are NOT yet verified** — that needs a CUDA box and is
+             the direct analogue of week 1's dfa_torch validation on Kaggle.
+
+
+[2] NameError in vendored Siglip2 weight init — every from_config build dies
+----------------------------------------------------------------------------
+Date:        2026-08-17
+Fingerprint: NameError: name 'Siglip2Model' is not defined. Did you mean: 'Siglip2MLP'?
+             (modeling_siglip2.py, Siglip2PreTrainedModel._init_weights)
+
+Cause:       NVIDIA vendored the **vision-only** subset of HuggingFace's siglip2 into
+             Eagle-Block2A-2B-v2 — `Siglip2VisionModel` and friends are present,
+             `Siglip2Model` and `Siglip2ForImageClassification` are not. But
+             `_init_weights` still carries the two `elif isinstance(module, ...)`
+             branches that reference them. Python resolves those names at call time,
+             so any module that falls past the earlier branches raises NameError.
+             `EagleBackbone` uses `AutoModel.from_config`, which always random-inits,
+             so this fires on **every** construction — this is not a
+             CPU/Mac-specific failure, the released code is broken for anyone building
+             from config rather than from_pretrained.
+
+Fix:         Deleted the two dead branches. Not stubbed: the classes do not exist in
+             this file, so there is nothing for them to initialise, and a stub that
+             silently skipped init would be the wrong kind of quiet.
+
+Status:      Fixed. Backbone constructs; checkpoint then overwrites the init anyway,
+             but the path has to survive to get there.
+
+
+[3] SDPA/eager silently ignore Eagle's image packing — cross-image attention
+--------------------------------------------------------------------------
+Date:        2026-08-18
+Fingerprint: No exception. Correct shapes, finite values, plausible outputs. Detected
+             only by asking whether perturbing image B changes image A's output:
+             it did, by 2.187e-01.
+
+Cause:       Eagle packs several images into one sequence and communicates the layout
+             ONLY through `seq_len_list` (per-image token counts). In
+             `Siglip2Attention.forward`, `attention_mask` was hardcoded to None and
+             `seq_len_list` passed as a keyword. Only NVIDIA's
+             `flash_attention_forward_for_packing` reads it — it becomes `cu_seqlens`
+             for `flash_attn_varlen_func`, i.e. block-diagonal attention, one block per
+             image. The stock `sdpa_attention_forward` and `eager_attention_forward`
+             accept `**kwargs`, silently discard `seq_len_list`, and with a null mask
+             attend densely across the ENTIRE packed sequence.
+
+             This invalidates the assumption behind bug [1]'s fix. Substituting SDPA for
+             flash-attn is a pure kernel swap in most codebases — same math, different
+             schedule — and that is how the DiffusionDrive attention port was justified. Here it
+             is NOT: the two paths compute different functions whenever more than one
+             image is packed. Single-image inference is unaffected, which is presumably
+             why it survived upstream.
+
+Fix:         `_build_packing_mask(seq_len_list, total_len, device, dtype)` constructs the
+             additive block-diagonal mask and passes it on every non-flash path; the
+             flash path still receives None and reads `seq_len_list` itself. Returns None
+             for a single image (nothing to separate, and it avoids an O(N^2) allocation
+             on the common path). Raises rather than mismasking if `seq_len_list` does not
+             sum to the sequence length — an unrecognised layout must not be silently
+             masked wrong.
+
+Cost:        O(total_len^2) and it rules out PyTorch's flash SDPA backend (which supports
+             only no-mask or causal), leaving memory-efficient. Acceptable: the sm_75
+             targets needing this path have no flash backend anyway. At training scale
+             the better route is `torch.nn.attention.flex_attention` with a block mask,
+             which skips fully-masked blocks instead of materialising them.
+
+Status:      Fixed, verified by tools/check_attention_packing.py. Leak 2.187e-01 -> 0.0;
+             dense paths match an independently-written block-diagonal reference (eager
+             exactly, sdpa to 5.96e-08); single-image path unchanged to 6.71e-08.
+             8 regression tests in tests/test_attention_packing.py.
+
+Lesson:      "Same math, different kernel" is a claim about the KERNEL. It says nothing
+             about the masking/packing code wrapped around it, which is where vendored
+             VLM backbones put their real semantics. Test the property the substitution
+             is supposed to preserve, not just the numerics of one call.
+
+
+[4] Released config diverges from the dataclass defaults (not a bug — a trap)
+-----------------------------------------------------------------------------
+Date:        2026-08-17
+Recorded because reading gr00t/configs/model/gr00t_n1d6.py alone gives the wrong model.
+The shipped GR00T-N1.6-3B config.json overrides:
+
+    action_horizon              16   -> 50
+    max_state_dim               29   -> 128
+    max_action_dim              29   -> 128
+    apply_sincos_state_encoding False -> True
+    use_relative_action         False -> True
+    eagle_collator              False -> True
+
+`use_relative_action=True` is the one with teeth: it confirms the N1.6 policy consumes
+and emits state/actions **relative to the current state**, which is exactly the
+`state_relative` parameter in ros2_bridge/vla_bridge/vla_policy_node.py. Wrong value
+there produces plausible, smooth, wrong actions — no crash, no shape error.
+
+
+[5] LeRobot loading — four traps, one of them silent
+-----------------------------------------------------
+Date:        2026-08-18
+Upstream's `LeRobotEpisodeLoader` needs no `lerobot` install (pandas/pyarrow/numpy only),
+so per the Adaptation Rule we use it directly. Getting it to run surfaced four things:
+
+a) **demo_data ships as git-lfs pointers.** Every parquet/mp4 in `demo_data/` is a
+   ~130-byte pointer until fetched. Symptom is an ArrowInvalid "Parquet magic bytes not
+   found in footer", which reads like data corruption rather than a missing fetch.
+   git-lfs was not installed on this Mac at all. Fix:
+       brew install git-lfs && cd grootN1_Robotics/upstream && git lfs install --local && git lfs pull
+
+b) **Key naming is asymmetric and undocumented.**
+       video / state / action  -> BARE keys      ("front", "single_arm")
+       language                -> PREFIXED key   ("annotation.human.task_description")
+       output DataFrame columns -> ALWAYS PREFIXED ("state.single_arm")
+   So what you pass in is not what you get back, except for language. Confirmed against
+   `configs/data/embodiment_configs.py`, which is the only place the convention is
+   visible.
+
+c) **SILENT FAILURE: a wrong state/action key warns and drops the column.**
+   `_extract_joint_groups` prints "Joint group 'state.single_arm' not found" and
+   continues. The returned DataFrame then has no `state.*` at all — i.e. a model trained
+   with no proprioception, no traceback, no crash. Video keys DO raise; state and action
+   do not. This is the most dangerous behaviour found in the repo so far.
+   Fix: `grootN1_Robotics/lerobot_data.py::validate_modality_configs` checks every key against
+   modality.json and raises, with a "drop the prefix" hint for the common mistake.
+
+d) **The default video backend does not work locally.** `torchcodec` (upstream default)
+   is not installable on Apple Silicon; `torchvision_av` shells out to an `ffprobe`
+   binary that is not present; `av` raises NotImplementedError. `opencv` works.
+   `available_video_backend()` probes rather than guesses — `torchvision_av` imports
+   fine and only fails later at decode time, so an import check is not sufficient.
+
+Also note `loader[idx]` returns an entire EPISODE as a DataFrame, not one training
+sample. cube_to_bowl_5 = 5 episodes of [568, 745, 454, 1797, 584] frames; state is
+single_arm(5) + gripper(1) = 6 DOF; video.front is (480, 640, 3) uint8.
+
+
+[6] LIBERO eval harness runs on macOS — upstream's EGL requirement is a Linux assumption
+------------------------------------------------------------------------------------------
+Date:        2026-08-19
+Claim under test: `gr00t/eval/sim/LIBERO/setup_libero.sh` sets MUJOCO_GL=egl and
+             PYOPENGL_PLATFORM=egl, and `examples/LIBERO/README.md` installs
+             libegl1-mesa-dev via apt. EGL does not exist on macOS, so the harness reads
+             as Linux-only.
+
+Finding:     It is not. MuJoCo's macOS offscreen path is **CGL**, and it works:
+                 MUJOCO_GL=cgl  -> RENDER OK
+                 MUJOCO_GL=glfw -> RENDER OK
+                 MUJOCO_GL=osmesa -> RuntimeError (invalid on this platform)
+             A real LIBERO env resets, steps, and renders 256x256 agentview and wrist
+             images on Apple Silicon:
+                 OffScreenRenderEnv(libero_spatial task 0) -> reset OK, step OK,
+                 agentview_image (256,256,3) uint8 fully populated.
+
+Blockers cleared (env `libero_vl`, py3.10):
+  - `pip install -r LIBERO/requirements.txt` FAILS on two packages:
+      * `egl_probe` (pulled by robomimic 0.2.0) — EGL-specific, cannot build on macOS;
+      * `tokenizers` — transformers 4.21.1 has no arm64 wheel and needs a Rust build.
+    Neither is needed to CREATE or STEP an env: that path is robosuite, not robomimic.
+    Installing a targeted subset (robosuite 1.4.0, bddl, mujoco 3.3.1, numpy 1.26.4,
+    gymnasium 0.29.1, gym, hydra-core, easydict, opencv, einops, matplotlib, cloudpickle,
+    future, termcolor) plus `pip install --no-deps -e LIBERO` works.
+  - mujoco is pinned 3.3.1 deliberately by upstream: robosuite 1.4.0 calls
+    `mj_fullM(model, dst, M)`, whose signature changed in mujoco 3.10.0. Keep the pin.
+  - LIBERO's editable-install finder did not expose the package; PYTHONPATH pointing at
+    the repo root does.
+  - `from libero.libero import benchmark` PROMPTS INTERACTIVELY on first import to create
+    ~/.libero/config.yaml. `conda run` does not forward stdin, so it dies with EOFError —
+    call the env's interpreter directly (`~/miniforge3/envs/libero_vl/bin/python`) and
+    pipe an answer, or pre-write the config.
+
+[6b] BUT the base checkpoint cannot be evaluated on LIBERO — and SimplerEnv cannot run here
+--------------------------------------------------------------------------------------------
+Date:        2026-08-19
+The simulator working locally is necessary, not sufficient. Two separate walls:
+
+**LIBERO needs a fine-tuned checkpoint.** `nvidia/GR00T-N1.6-3B`'s processor declares
+only three embodiments — `behavior_r1_pro`, `gr1`, `robocasa_panda_omron`. There is NO
+`libero_panda` modality config, even though `embodiment_id.json` reserves id 2 for it.
+That is consistent rather than a bug: `examples/LIBERO/README.md` creates the config by
+FINE-TUNING (`--embodiment-tag LIBERO_PANDA`), then evaluates
+`/tmp/libero_spatial/checkpoint-20000/`. The recipe is NUM_GPUS=8, MAX_STEPS=20000,
+GLOBAL_BATCH_SIZE=640. No LIBERO-finetuned N1.6 checkpoint is publicly released, so there
+is no published LIBERO number we can reproduce without doing that fine-tune ourselves.
+
+**SimplerEnv is the reproducible target but is Linux-x86_64 only.** The released
+`nvidia/GR00T-N1.6-bridge` DOES ship a usable config (its processor declares
+`oxe_widowx`), and it has a published success rate — so it is the cheapest published
+number to hold ourselves to. But SimplerEnv depends on ManiSkill2_real2sim, which pins
+**sapien 2.x, published solely as `manylinux2014_x86_64` wheels** — no macOS build, no
+arm64. (sapien 3.0.2+ added `macosx_12_0_universal2`, but ManiSkill2_real2sim is on 2.x.)
+It therefore cannot run on Apple Silicon at all, at any effort.
+
+Consequence for the plan: LIBERO is the harness that runs locally but has nothing to
+reproduce; SimplerEnv has something to reproduce but needs a Linux box. Whichever way
+round, a published GR00T number requires cloud Linux — this is not a case where more
+local work removes the dependency.
+
+Consequence (architecture): the policy and the simulator do NOT need to share an
+environment. `tools/serve_policy.py` already runs the real policy on CPU behind ZMQ, and
+`ros2_bridge/.../wire.py` is a torch-free client. So the sim process can live in
+`libero_vl` (torch 2.5.1, robosuite 1.4.0, numpy 1.26.4) while the policy lives in
+`grootN1_Robotics` (torch 2.13, transformers 4.51.3) — version sets that could not coexist in one
+env. This is the same decoupling the ROS bridge uses, reused for eval.
+
+
+VERIFIED MILESTONES
+-------------------
+2026-08-17  Official nvidia/GR00T-N1.6-3B loads **0 missing / 0 unexpected / 0 shape
+            mismatch** — 1106 tensors, 3.29B params — into the adapted model built with
+            sdpa + fp32 on CPU (tools/load_checkpoint.py). Fidelity gate passed.
