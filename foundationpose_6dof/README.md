@@ -16,8 +16,9 @@ pose holds it just as steadily.
 
 **No pose accuracy is claimed, and the pose is refused downstream.** The returned pose
 disagrees with our segmentation centroid by **72 cm**, and the disagreement is a
-**rotation error of at least 99.5°** — measured by moving the mesh origin a known 52.9 cm
-and watching the answer move the right distance in the wrong direction. Neither estimate
+**rotation error of 175.63°** — the object is essentially flipped. The scorer spans only
+1.75 points across 252 rotation hypotheses (48 of them within 1% of the top), so the pose
+is the summit of a plateau rather than a peak. Neither estimate
 is ground truth, so this does not say which is right; separating "our mesh is bad" from
 "the model is misbehaving" needs upstream's own `demo_data/mustard0` — see
 [Plan.md](Plan.md) and `bug_log.txt` [4].

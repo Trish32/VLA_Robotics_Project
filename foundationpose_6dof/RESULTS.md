@@ -39,9 +39,11 @@ verts / 9,657 faces, extents 1.573 × 1.168 × 0.986 m.
 |---|---|
 | `register()` | **returns a pose** — t = [0.567, 0.424, 2.730] m |
 | `track_one()` across 8 frames | all succeed |
-| **world-frame spread** (self-consistency) | **2.08 cm** |
-| agreement with our segmentation centroid | **72.14 cm** apart |
-| **rotation error** vs `R_world_to_cam` | **≥ 99.5°** |
+| **world-frame spread** (self-consistency) | **2.08 cm** (3.13 cm on the r13 rerun) |
+| agreement with our segmentation centroid | **72.14 cm** apart (median 73.02 cm over 8 frames) |
+| **rotation error** vs `R_world_to_cam` | **175.63°** — measured directly |
+| scorer range over 252 rotation hypotheses | **1.75** (std 0.196); **48/252 within 1% of the top** |
+| frames passing the stage-4 gate | **0 / 8** |
 
 **The spread means less than it appears to.** Composing each tracked pose with its camera
 pose puts the object in the world frame, where a static object must not move; over 8
@@ -49,13 +51,26 @@ frames it moves **2.08 cm**. That is a *consistency* check. A tracker locked ont
 pose holds it exactly as steadily as one locked onto the right pose, so this bounds drift
 and says nothing about accuracy.
 
-**The disagreement is a rotation error, not a translation one.** Re-centring the mesh
-moved its origin a known **52.9 cm**; FoundationPose's answer moved **53.5 cm** — the
-right magnitude, confirming the pose convention is understood — but **99.5° away** from
-the direction our map predicts. Both are the same offset vector in the camera frame, one
-rotated by the estimate and one by the true camera rotation, so the angle between them is
-a lower bound on the rotation error. The 72 cm translation residual is what a ≥99°
-orientation error looks like measured at a point offset from the rotation centre.
+**The disagreement is a rotation error, not a translation one.** The origin probe first
+put a lower bound on it: re-centring the mesh moved its origin a known **52.9 cm**, and
+FoundationPose's answer moved **53.5 cm** — right magnitude, so the pose convention is
+understood — but **99.5° away** from the direction our map predicts. Measuring the
+rotation directly against `R_world_to_cam` (the mesh is cut from the world cloud
+unrotated, so its frame *is* the world frame up to translation) gives **175.63°**,
+consistent with that bound and close enough to 180° to name the failure: the pose is
+essentially flipped. The 72 cm translation residual is what that looks like measured at a
+point offset from the rotation centre.
+
+**The scorer is barely responding to orientation at all.** `register()` scores a grid of
+**252 hypotheses spanning the whole rotation group**, and the scores span **1.75 points**
+end to end (std 0.196), with **48 of 252 within 1% of the top**. The returned pose is the
+summit of a plateau, not a peak — which is why more refinement iterations cannot help,
+and why a near-180° answer is not surprising: a one-sided Poisson shell flipped about an
+in-plane axis renders almost the same depth from a single viewpoint.
+
+That is a statement about *identifiability*, and it is the number the mustard0 control is
+built to compare against: same scorer, same code path, same 252 hypotheses, with only the
+mesh and mask quality differing.
 
 *(An earlier revision of this page attributed the 72 cm to `reset_object` subtracting the
 mesh's bbox centre. `estimater.py:233` undoes that subtraction before returning, so the

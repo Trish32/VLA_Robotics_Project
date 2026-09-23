@@ -38,9 +38,9 @@ both official checkpoints load and construct on `cuda:0` (scorer 15.77 M, refine
 **Done since:** `register()` and `track_one()` run on a T4 against that mesh —
 **2.08 cm world-frame spread** over 8 frames, so the tracker is strongly self-consistent.
 
-**Not done:** the pose disagrees with our map by **72.14 cm**, and the disagreement is
-**a rotation error of at least 99.5°**, not a translation one. See
-`foundationpose_6dof/bug_log.txt` entry [4].
+**Not done:** the pose disagrees with our map by **72.14 cm**, and the disagreement is a
+**175.63° rotation error** — the object is essentially flipped — not a translation one.
+See `foundationpose_6dof/bug_log.txt` entry [4].
 
 **What the three checks say.** None needs ground truth:
 
@@ -52,9 +52,14 @@ both official checkpoints load and construct on `cuda:0` (scorer 15.77 M, refine
    centroid says 2.05 m; median depth under the mask is 2.10 m.
 3. **Rotation — fails, and this is the real finding.** Moving the mesh origin a known
    52.9 cm moved FoundationPose's answer 53.5 cm — right magnitude, so the pose
-   convention is understood — but **99.5° away** from the direction the map predicts.
-   Same offset vector, one rotated by the estimate and one by the true camera rotation,
-   so that angle is a lower bound on the rotation error.
+   convention is understood — but **99.5° away** from the direction the map predicts,
+   which lower-bounds the rotation error. Measured directly against `R_world_to_cam`:
+   **175.63°**. The object is essentially flipped.
+4. **Identifiability — the explanation, pending the control.** `register()` scores 252
+   hypotheses spanning the whole rotation group; the scores span **1.75 points** (std
+   0.196) with **48/252 within 1% of the top**. The pose is the top of a plateau, so no
+   amount of refinement fixes it — and a one-sided shell flipped in-plane renders nearly
+   the same depth, which is exactly the 180° ambiguity observed.
 
 An earlier version of this page blamed the 72 cm on a frame convention, on the strength
 of `reset_object` subtracting the mesh's bbox centre. `estimater.py:233` undoes that
@@ -69,8 +74,9 @@ bundle is bad" from "FoundationPose is misbehaving", and it is what the Fidelity
 prescribes anyway. **Queued as kernel r12.**
 
 **Wired regardless:** `pipeline/tools/e2e_pose.py` consumes the pose and gates it on
-translation, rotation and depth before it reaches the world model — on today's numbers it
-**refuses**, and the position-only pose from stage 3 stands. 16 tests cover the gate.
+translation, rotation and depth before it reaches the world model. Run against the real
+r12 output it refuses **0/8 frames corroborating** — median 73.02 cm, 175.86° — and the
+position-only pose from stage 3 stands. 16 tests cover the gate.
 
 ---
 

@@ -10,7 +10,8 @@ exposed through ROS2/TF2 and read by a VLA policy.
 [`e2e_demo.png`](assets/e2e_demo.png). Rendered from the run's own artifacts by
 [`tools/render_demo.py`](tools/render_demo.py) — not a screen capture.*
 
-One run on real TUM `fr1/xyz`, CPU only. Every panel is live the whole time and the
+One run on real TUM `fr3/walking_xyz` — a cluttered office with people walking through
+it — CPU only. Every panel is live the whole time and the
 *state* moves — this stack's claim is that the stages feed each other, so showing them as
 six separate pictures would misrepresent it:
 
@@ -18,8 +19,8 @@ six separate pictures would misrepresent it:
 |---|---|
 | RGB + depth | the raw stream everything below is derived from |
 | **3-D world model** (orbiting) | the cloud accumulating under a flying camera frustum, then instance-coloured points, then the target's box |
-| points-fused sparkline | fusion progress, 0 → 319,570 unprojected points |
-| scene graph | instances resolving with kind and CLIP similarity, then the `on`/`near` relations |
+| points-fused sparkline | fusion progress over 103 frames, 0 → 133,928 fused points |
+| scene graph | instances resolving with kind and CLIP similarity, then the spatial relations |
 | prompt to policy | the exact string stage 5 serialises and stage 6 consumes |
 | GR00T chunk | 16 × 29 DoF, with the execution cursor advancing at 30 Hz |
 
@@ -44,11 +45,11 @@ RGB-D ──▶ ORB-SLAM3 / DROID-SLAM ──▶ TSDF fusion ──▶ OpenMask3
 |---|---|---|
 | localize | ORB-SLAM3 (upstream `4452a3c`, 0 patches) | ATE **1.03 cm**, 798/798 frames, 41.4 FPS |
 | localize (dynamic) | + YOLO/ByteTrack feature rejection | ATE 80.92 → **18.70 cm** (−76.9%) on `fr3/walking_xyz` |
-| fuse | TSDF, keyframe-anchored | 70,236 points |
-| segment | OpenMask3D — Mask3D + SAM + CLIP | **7 proposals → 6 instances**, scores 0.556–0.943 |
-| pose | FoundationPose | **CUDA-gated**, never executed — see below |
-| ground | scene graph → target | 2 relations incl. **`the monitor is on the desk`** → `monitor_6` |
-| act | GR00T N1.6-3B | **16 steps × 29 DoF**, 3.0 s CPU |
+| fuse | TSDF, keyframe-anchored, gravity-levelled | **133,928 points** over 103 frames |
+| segment | OpenMask3D — Mask3D + SAM + CLIP | **6 instances**, Mask3D scores 0.533–0.727 |
+| pose | FoundationPose | runs on a T4; **175.63° rotation error** vs our map — **gated out**, see below |
+| ground | scene graph → target | 5 nodes, 2 relations; `resolve("the chair")` → **`chair_4`** |
+| act | GR00T N1.6-3B | **16 steps × 29 DoF**, 4.4 s CPU |
 
 **→ [Full numbers, ablations and what is *not* established](../RESULTS.md)**
 
@@ -73,8 +74,8 @@ Three results carry the project, each measured and each with its own section in
 **FoundationPose now runs** — `register()` + `track_one()` on a T4 against a mesh cut
 from our own TSDF, with a **2.08 cm** world-frame spread over 8 frames. That is
 self-consistency, not accuracy. Its pose disagrees with our segmentation centroid by
-**72 cm**, and the disagreement is a **rotation error of at least 99.5°**, so no pose
-accuracy is claimed yet.
+**72 cm**, and the disagreement is a **175.63° rotation error**, so no pose accuracy is
+claimed yet.
 
 The 6-DoF path is nonetheless wired: `tools/e2e_pose.py` consumes the pose and calls
 `refine_with_pose` **behind a gate** on translation, rotation and depth. On today's

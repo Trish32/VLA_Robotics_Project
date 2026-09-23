@@ -17,7 +17,7 @@
 # load, which is the Fidelity Rule's first half and cannot be checked on the Mac.
 import os, subprocess, sys, torch, traceback
 
-KERNEL_VERSION = "v12-mustard-control"
+KERNEL_VERSION = "v13-score-spread"
 print(f"=== {KERNEL_VERSION} ===", flush=True)
 
 def sh(label, cmd, tail=2500):
@@ -201,6 +201,26 @@ try:
     )
     print("  FoundationPose constructed", flush=True)
 
+    def score_spread(est, tag):
+        """How hard the scorer is actually discriminating between orientations.
+
+        `register()` scores a grid spanning the whole rotation group and keeps the
+        ranking on `est.scores`. If the object's orientation is observable, the best
+        hypothesis should stand clear of the field. If the scores are flat, the pose it
+        returns is the top of a plateau — an arbitrary pick among near-ties — and no
+        amount of refinement iteration will fix that. This is the number that says
+        whether a wrong orientation is a BUG or an UNIDENTIFIABLE input.
+        """
+        s = np.sort(np.asarray(est.scores.float().cpu()))[::-1]
+        rng, margin = float(s[0] - s[-1]), float(s[0] - s[1])
+        near = int((s > s[0] - 0.01 * abs(s[0])).sum())
+        print(f"\n  [{tag}] scorer over {len(s)} rotation hypotheses", flush=True)
+        print(f"    top-1 {s[0]:.4f}   margin over top-2 {margin:.4f}", flush=True)
+        print(f"    full range {rng:.4f}   std {float(s.std()):.4f}", flush=True)
+        print(f"    within 1% of top: {near}/{len(s)} hypotheses", flush=True)
+        return {"n": len(s), "top1": float(s[0]), "margin": margin, "range": rng,
+                "std": float(s.std()), "within_1pct": near}
+
     def load(i):
         rgb = cv2.cvtColor(cv2.imread(f"{B}/rgb_{i:03d}.png"), cv2.COLOR_BGR2RGB)
         depth = cv2.imread(f"{B}/depth_{i:03d}.png", cv2.IMREAD_ANYDEPTH)
@@ -234,6 +254,7 @@ try:
     R_ref = np.array(meta["frames"][0]["R_world_to_cam"])
     print(f"  rotation    residual = {rot_err_deg(pose[:3,:3], R_ref):6.2f} deg",
           flush=True)
+    spread_ours = score_spread(est, "ours")
     # Depth under the mask says where the observed surface is; a pose far behind it is
     # wrong regardless of which reference point is used.
     zs = depth[mask & (depth > 0)]
@@ -265,6 +286,7 @@ try:
         "world_spread_cm": spread * 100,
         "translation_residual_cm": float(np.linalg.norm(pose[:3, 3] - origin) * 100),
         "rotation_residual_deg": rot_err_deg(pose[:3, :3], R_ref),
+        "score_spread": spread_ours,
     }, open("/kaggle/working/pose_result.json", "w"), indent=1)
     print("  -> /kaggle/working/pose_result.json", flush=True)
     print("RESULT: REGISTER_OK")
@@ -293,14 +315,24 @@ try:
     from estimater import FoundationPose
 
     D = f"{FP}/demo_data"
-    # --remaining-ok: the folder holds hundreds of frames and gdown caps at 50 per
-    # folder. We need frame 0 and a short track, so the cap is not a problem.
+    # r12 downloaded this and stopped one step short: the Drive "folder" holds a single
+    # 362 MB mustard0.zip, so gdown --folder fetched an archive and the reader then
+    # looked for demo_data/mustard0/cam_K.txt inside a directory that did not exist.
     sh("fetch mustard0", f"cd {FP} && pip -q install gdown && "
-       f"gdown --folder --remaining-ok -O {D} "
+       f"[ -f {D}/mustard0.zip ] || gdown --folder --remaining-ok -O {D} "
        f"https://drive.google.com/drive/folders/1pRyFmxYXmAnpku7nGRioZaKrVJtIsroP "
-       f"2>&1 | tail -5; find {D} -maxdepth 3 -type d | head -20")
+       f"2>&1 | tail -3; "
+       f"for z in {D}/*.zip; do unzip -qo \"$z\" -d {D}/; done; "
+       f"find {D} -maxdepth 2 -type d | head -20")
 
     root = f"{D}/mustard0"
+    if not Path(f"{root}/cam_K.txt").exists():
+        # The archive's internal layout is upstream's to choose, not ours to assume.
+        hits = list(Path(D).rglob("cam_K.txt"))
+        if not hits:
+            raise SystemExit(f"no cam_K.txt anywhere under {D} — layout changed")
+        root = str(hits[0].parent)
+        print(f"  (mustard0 unpacked to {root})", flush=True)
     K_c = np.loadtxt(f"{root}/cam_K.txt").reshape(3, 3)
     mesh_c = trimesh.load(sorted(Path(f"{root}/mesh").glob("*.obj"))[0], process=False)
     rgb_f = sorted(Path(f"{root}/rgb").glob("*.png"))[0]
@@ -325,6 +357,13 @@ try:
                                        iteration=5)).reshape(4, 4)
     print(f"\n  register t = {np.round(pose_c[:3, 3], 4).tolist()} m", flush=True)
 
+    # THE comparison. Same scorer, same code path, same number of hypotheses — the only
+    # difference is the quality of the mesh and mask. Ours: range 1.75, std 0.196, with
+    # 48/252 hypotheses within 1% of the top. If mustard0 is comparably flat, the port is
+    # broken. If it separates cleanly, our bundle is the problem and the orientation was
+    # never observable from a one-sided shell behind a 695 px mask.
+    spread_c = score_spread(est_c, "mustard0")
+
     # No annotation needed for the check that matters here: a correct pose puts the
     # object's origin about half its depth behind the surface the depth camera sees.
     z_obs = float(np.median(dep_c[msk_c & (dep_c > 0)]))
@@ -346,7 +385,8 @@ try:
         print("\n  no annotated_poses/ in the download — depth check only", flush=True)
 
     json.dump({"ok": True, "pose": pose_c.tolist(), "median_depth_m": z_obs,
-               "behind_surface_cm": behind, "mask_px": int(msk_c.sum())},
+               "behind_surface_cm": behind, "mask_px": int(msk_c.sum()),
+               "score_spread": spread_c},
               open("/kaggle/working/control_mustard0.json", "w"), indent=1)
     print("RESULT: CONTROL_OK")
 except Exception:
