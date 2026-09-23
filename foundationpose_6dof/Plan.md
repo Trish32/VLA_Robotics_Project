@@ -1,29 +1,30 @@
 # FoundationPose — plan
 
-**The binding gap: `register()` has never returned a pose.**
+`register()` and `track_one()` now run on a T4 against a mesh cut from our own TSDF — see
+[RESULTS.md](RESULTS.md). What remains is explaining one number.
 
-Everything upstream of it is done — nvdiffrast builds and rasterises on a T4, the import
-chain resolves, both checkpoints load and construct on `cuda:0`, and the mesh + mask
-bundle is built from our own TSDF (9,657 triangles from 1,142 instance points, 8 frames
-with occlusion-tested masks).
+## The binding gap: a 72 cm disagreement
 
-## How it gets judged when it runs
+`register()` places `chair_4` at z = 2.73 m; our segmentation centroid says 2.05 m. The
+tracker is self-consistent (**2.08 cm** world-frame spread over 8 frames), so this is not
+drift — the two methods disagree about where the object *is*, and neither is ground truth.
 
-Two checks, neither of which needs ground truth:
+**Hypothesis to test first, not to assume:** the mask is 695 px, where a 1.58 m object at
+2 m under fx = 535 should subtend ~410 px across. That is a sparse partial view, so the
+two estimates may be centring on different subsets. Ways to discriminate:
 
-1. **Agreement** — `register()`'s translation against what our own segmentation believed
-   the centroid was. These are independent estimates; agreement is evidence, not proof,
-   and disagreement does not say which is wrong.
-2. **World-frame spread** — the tracked pose composed with each camera pose. A static
-   object fused into a world frame must not move. This is the check that actually
-   discriminates, because a drifting tracker cannot satisfy it by luck.
+| test | what it would show |
+|---|---|
+| denser fusion (smaller `--stride`) → bigger masks | if the gap shrinks, the mask was the cause |
+| run upstream's own `demo_data/mustard0` | a clean CAD mesh + full mask isolates our bundle from FoundationPose itself |
+| a cleaner instance (higher Mask3D score, tighter extent) | `chair_4` is 1.58 × 1.18 × 0.99 m — a coarse region, not a clean object |
 
-## Known weakness going in
+Running upstream's demo is the decisive one: it is the only test that separates "our mesh
+is bad" from "FoundationPose is misbehaving", and it is the Fidelity Rule's own
+prescription — validate against the original before trusting the adaptation.
 
-The target instance is 1.58 × 1.18 × 0.99 m — a coarse region, not a clean object — and
-its masks are 655–954 px. **A large spread would more likely indict the mesh than the
-tracker**, so a bad result needs the mesh ruled out before it says anything about
-FoundationPose.
+## Then
 
-Instance density is the lever: a denser fusion (smaller `--stride` in
-`pipeline/tools/e2e_tum.py`) at TSDF memory cost.
+- [ ] Feed the refined 6-DoF pose back into the scene graph via `refine_with_pose`, which
+      has never run on real FoundationPose output — only on synthesised poses.
+- [ ] End-to-end 6-DoF grasp: the chain currently produces position-only object poses.

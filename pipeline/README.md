@@ -70,10 +70,11 @@ Three results carry the project, each measured and each with its own section in
 
 ## The honest limit
 
-`nvdiffrast` is CUDA-only, so **FoundationPose has never returned a pose**. Its model now
-loads and constructs on a T4 (scorer 15.77 M, refiner 16.83 M), and the mesh + mask
-bundle is built from our own TSDF — but `register()` has not run. Object poses here are
-position-only with identity rotation: a segmentation mask carries no orientation, and
+**FoundationPose now runs** — `register()` + `track_one()` on a T4 against a mesh cut
+from our own TSDF, with a **2.08 cm** world-frame spread over 8 frames. But its pose
+disagrees with our segmentation centroid by **72 cm**, and neither is ground truth, so no
+pose accuracy is claimed yet. The poses in *this* chain are still position-only with
+identity rotation, because that refined pose has not been fed back: a segmentation mask carries no orientation, and
 `observations.from_openmask3d` refuses to invent one rather than hand a planner an
 authoritative-looking wrong pose.
 

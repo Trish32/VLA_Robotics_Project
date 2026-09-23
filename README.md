@@ -38,7 +38,7 @@ RGB-D ──▶ ORB-SLAM3 / DROID-SLAM ──▶ TSDF fusion ──▶ OpenMask3
 | **localize** — ORB-SLAM3 | **ATE 1.03 cm**, 798/798 frames, 41.4 FPS CPU |
 | **localize, dynamic** — + YOLOv8n/ByteTrack | **ATE 80.92 → 18.70 cm (−76.9%)** |
 | **segment** — Mask3D + SAM + CLIP | checkpoint **0/0/0**, via a pure-PyTorch sparse conv verified at **1e-10** |
-| **pose** — FoundationPose | checkpoints **0/0/0**, constructs on a T4 — `register()` not yet run |
+| **pose** — FoundationPose | `register()` + tracking on a T4, **2.08 cm** world-frame spread over 8 frames |
 | **act** — GR00T N1.6-3B | **16 steps × 29 DoF**, 4.4 s CPU |
 
 **→ [The stack, the demo, and the honest limit](pipeline/)**

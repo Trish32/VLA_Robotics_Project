@@ -35,21 +35,27 @@ both official checkpoints load and construct on `cuda:0` (scorer 15.77 M, refine
 16.83 M). The mesh + mask bundle is built from our own TSDF — 9,657 triangles cut from
 1,142 instance points, 8 frames with occlusion-tested masks.
 
-**Not done:** `register()` has never returned a pose.
+**Done since:** `register()` and `track_one()` run on a T4 against that mesh —
+**2.08 cm world-frame spread** over 8 frames, so the tracker is strongly self-consistent.
 
-**How it gets judged when it does.** Two checks, neither of which needs ground truth:
+**Not done:** the pose disagrees with our segmentation centroid by **72.14 cm**, and
+nothing yet says which is wrong. See `foundationpose_6dof/Plan.md`.
 
-1. **Agreement** — `register()`'s translation against what our own segmentation believed
-   the centroid was. These are independent estimates; agreement is evidence, not proof,
-   and disagreement does not say which is wrong.
-2. **World-frame spread** — the tracked pose composed with each camera pose. A static
-   object fused into a world frame must not move. This is the invariant that actually
-   discriminates, because a drifting tracker cannot satisfy it by luck.
+**What the two checks said.** Neither needs ground truth, and they disagree in an
+informative way:
 
-**Known weakness going in.** The `chair_4` instance is 1.58 × 1.18 × 0.99 m — a coarse
-region, not a clean chair — and its masks are 655–954 px. A large spread would more
-likely indict the mesh than the tracker, so a bad result needs the mesh ruled out before
-it means anything about FoundationPose.
+1. **World-frame spread — passes.** Composing each tracked pose with its camera pose and
+   requiring a static object to stay static gives **2.08 cm** over 8 frames. A drifting
+   tracker cannot satisfy this by luck.
+2. **Agreement — open.** `register()` says z = 2.73 m, our segmentation centroid says
+   2.05 m. Agreement would have been evidence; disagreement does not say which is wrong.
+
+**The mask is the first hypothesis, and it is a hypothesis.** 695 px, where a 1.58 m
+object at 2 m under fx = 535 should subtend ~410 px across — a sparse partial view, so
+the two methods may be centring on different subsets. The decisive test is running
+upstream's own `demo_data/mustard0`: a clean CAD mesh with a full mask separates "our
+bundle is bad" from "FoundationPose is misbehaving", and it is what the Fidelity Rule
+prescribes anyway — validate against the original before trusting the adaptation.
 
 ---
 
@@ -119,8 +125,10 @@ on §1 too.
 
 Ordered by what unblocks the most, not by effort.
 
-1. **FoundationPose `register()`** — every input exists; this is the last stage of the
-   headline claim that has never run.
+1. **Explain the 72 cm** — run upstream's `demo_data/mustard0`. It is the only test that
+   separates our mesh from the model, and until it runs no pose accuracy is claimable.
+   Then feed the refined pose back through `refine_with_pose`, which has still only ever
+   seen synthesised input.
 2. **Ground-truth instance labels** — unblocks mIoU, the MobileSAM trade, the `inside`
    support test, and any statement about recognition. One resource, four gaps.
 3. **A CUDA box** — unblocks DROID-SLAM tracking and turns every MODELLED speedup into a

@@ -17,7 +17,7 @@
 # load, which is the Fidelity Rule's first half and cannot be checked on the Mac.
 import os, subprocess, sys, torch, traceback
 
-KERNEL_VERSION = "v9-register"
+KERNEL_VERSION = "v10-mycpp-register"
 print(f"=== {KERNEL_VERSION} ===", flush=True)
 
 def sh(label, cmd, tail=2500):
@@ -84,6 +84,15 @@ sh("nvdiffrast", "pip install -q --no-build-isolation "
 sh("pytorch3d", "FORCE_CUDA=0 CUDA_HOME= pip install -q --no-build-isolation "
    "'git+https://github.com/facebookresearch/pytorch3d.git@stable' 2>&1 | tail -6; echo ok")
 
+# mycpp is NOT optional, despite sitting behind a try/except in Utils.py. v9 died 100
+# lines past that guard with "module 'mycpp' has no attribute 'cluster_poses'":
+# `mycpp` is a SOURCE DIRECTORY in the repo, so Python 3's implicit namespace packages
+# resolve `import mycpp` to an empty module object instead of raising. The guard sees
+# success, mycpp is not None, and the failure surfaces later as a missing attribute.
+# So it has to be compiled, and the compiled module has to be the one that gets imported.
+sh("mycpp deps", "apt-get -qq install -y libboost-all-dev libeigen3-dev libomp-dev "
+   ">/dev/null 2>&1; pip install -q 'pybind11[global]' 2>&1 | tail -2; echo ok")
+
 sh("clone", f"cd /kaggle/working && rm -rf FoundationPose && "
    f"git clone -q https://github.com/NVlabs/FoundationPose.git && cd FoundationPose && "
    f"git checkout -q {COMMIT} && git rev-parse --short HEAD")
@@ -102,6 +111,30 @@ for name in 2023-10-28-18-33-37 2024-01-11-20-02-45; do
 done
 find {FP}/weights -maxdepth 2 | sort
 """)
+
+sh("mycpp build", f"""
+cd {FP}/mycpp && mkdir -p build && cd build && \
+  cmake .. -DPYTHON_EXECUTABLE=$(which python3) \
+           -DCMAKE_PREFIX_PATH=$(python3 -m pybind11 --cmakedir) >/dev/null 2>&1 && \
+  make -j4 2>&1 | tail -5
+ls -la {FP}/mycpp/build/*.so 2>/dev/null || echo 'NO .so BUILT'
+""")
+
+# Verify the COMPILED module is what imports, not the empty namespace package.
+print(f"\n{'='*70}\n[mycpp check]\n{'='*70}", flush=True)
+sys.path.insert(0, f"{FP}/mycpp/build")
+try:
+    import mycpp
+    where = getattr(mycpp, "__file__", None)
+    has = hasattr(mycpp, "cluster_poses")
+    print(f"  mycpp from {where}", flush=True)
+    print(f"  cluster_poses present: {has}", flush=True)
+    if not has:
+        print("  -> this is the empty NAMESPACE PACKAGE, not the built extension")
+        print("RESULT: MYCPP_NOT_BUILT"); raise SystemExit(0)
+except ImportError:
+    print("  mycpp does not import at all")
+    print("RESULT: MYCPP_NOT_BUILT"); raise SystemExit(0)
 
 print(f"\n{'='*70}\n[import chain]\n{'='*70}", flush=True)
 sys.path.insert(0, FP)

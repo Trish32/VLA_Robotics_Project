@@ -9,9 +9,14 @@ Model-based pose estimation and tracking: `register(K, rgb, depth, ob_mask, mesh
 
 ## The limit, up front
 
-**`register()` has never returned a pose.** Both official checkpoints load exactly and
-the model constructs on a Tesla T4, but no pose result exists. Nothing in this directory
-should be read as a pose-accuracy claim.
+`register()` and `track_one()` **do run** on a Tesla T4 against a mesh cut from our own
+TSDF, and the tracker is strongly self-consistent — **2.08 cm** world-frame spread over
+8 frames.
+
+**But no pose accuracy is claimed.** The returned pose disagrees with our own
+segmentation centroid by **72 cm**, and neither of those is ground truth, so nothing here
+says which is right. Separating "our mesh is bad" from "the model is misbehaving" needs
+upstream's own `demo_data` — see [Plan.md](Plan.md).
 
 ## Where the mesh comes from — no CAD models
 
