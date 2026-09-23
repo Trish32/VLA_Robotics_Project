@@ -61,16 +61,38 @@ consistent with that bound and close enough to 180° to name the failure: the po
 essentially flipped. The 72 cm translation residual is what that looks like measured at a
 point offset from the rotation centre.
 
-**The scorer is barely responding to orientation at all.** `register()` scores a grid of
-**252 hypotheses spanning the whole rotation group**, and the scores span **1.75 points**
-end to end (std 0.196), with **48 of 252 within 1% of the top**. The returned pose is the
-summit of a plateau, not a peak — which is why more refinement iterations cannot help,
-and why a near-180° answer is not surprising: a one-sided Poisson shell flipped about an
-in-plane axis renders almost the same depth from a single viewpoint.
+## The control: the port is correct, our bundle is not
 
-That is a statement about *identifiability*, and it is the number the mustard0 control is
-built to compare against: same scorer, same code path, same 252 hypotheses, with only the
-mesh and mask quality differing.
+Upstream's own `demo_data/mustard0`, through the identical code path, same weights, same
+252 hypotheses — only the mesh and mask differ:
+
+| | ours (`chair_4`) | mustard0 |
+|---|---|---|
+| mesh | 4,961 verts, Poisson over a one-sided shell | 10,983 verts, CAD |
+| mask | **695 px** | **3,252 px** |
+| origin vs measured surface | **60.8 cm** behind (surface is 13.4 cm deep) | **+2.06 cm** behind (half-depth 9.6 cm) |
+| pose correct? | **no** — 175.63° | **yes** |
+
+**That answers the Fidelity Rule question.** FoundationPose, both checkpoints, `mycpp`,
+nvdiffrast and our adaptation layer all produce a correct pose on upstream's data. The
+175.63° error belongs to *our input*, not to the port.
+
+### A metric that did not survive its own control
+
+An earlier revision of this page reported the scorer's spread — 1.75 points end to end,
+48/252 within 1% of the top — and read the flat top as "the orientation is
+unidentifiable". **The control refutes that reading.** mustard0, which returns a *correct*
+pose, is flatter still:
+
+| | ours | mustard0 |
+|---|---|---|
+| margin over top-2 | 0.50 | **0.0000** (exact tie) |
+| within 1% of top | 48/252 | **91/252** |
+
+Scores are computed *after* refinement, so hypotheses that converge onto the same pose
+legitimately tie. A flat top means **agreement**, not ambiguity — the opposite of what was
+claimed. The discriminating quantity is whether the refined **poses** cluster, not whether
+their **scores** do; r14 measures pairwise geodesic angle among the top-16 instead.
 
 *(An earlier revision of this page attributed the 72 cm to `reset_object` subtracting the
 mesh's bbox centre. `estimater.py:233` undoes that subtraction before returning, so the

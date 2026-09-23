@@ -16,12 +16,13 @@ pose holds it just as steadily.
 
 **No pose accuracy is claimed, and the pose is refused downstream.** The returned pose
 disagrees with our segmentation centroid by **72 cm**, and the disagreement is a
-**rotation error of 175.63°** — the object is essentially flipped. The scorer spans only
-1.75 points across 252 rotation hypotheses (48 of them within 1% of the top), so the pose
-is the summit of a plateau rather than a peak. Neither estimate
-is ground truth, so this does not say which is right; separating "our mesh is bad" from
-"the model is misbehaving" needs upstream's own `demo_data/mustard0` — see
-[Plan.md](Plan.md) and `bug_log.txt` [4].
+**rotation error of 175.63°** — the object is essentially flipped.
+
+**The port itself is validated.** Upstream's own `demo_data/mustard0`, through the
+identical code path, returns a correct pose — its origin sits **2.06 cm** behind the
+measured surface against a 9.6 cm half-depth. So the error belongs to our input, not to
+the model: a 695 px mask over a one-sided Poisson shell, against mustard0's 3,252 px over
+a CAD mesh. See [RESULTS.md](RESULTS.md) and `bug_log.txt` [5].
 
 ## Where the mesh comes from — no CAD models
 

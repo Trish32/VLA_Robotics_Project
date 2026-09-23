@@ -134,6 +134,82 @@ Consequence: the 2.08 cm tracking spread was being read as reassurance. It is a
              whereas a confident wrong rotation gets acted on.
 
 
+[5] FIDELITY GATE (REGISTER) PASSED — on upstream's data, not on ours
+-----------------------------------------------------------------------
+Date:        2026-09-23
+
+`demo_data/mustard0`, upstream's own demo, through the identical code path:
+
+    register t = [-0.448, 0.119, 0.802] m
+    median depth under mask = 0.781 m
+    origin sits +2.06 cm behind it   (half the mesh depth is 9.6 cm)
+
+A correct pose. So the port is sound — checkpoints, mycpp, nvdiffrast, the import
+shims and our adaptation layer all behave. The 175.63 deg error on `chair_4` is our
+INPUT, not the model. That is the Fidelity Rule question answered, and it is what
+entry [4] said could not be concluded without this test.
+
+Difference that matters: mask 3,252 px on a 10,983-vert CAD mesh, against 695 px on a
+4,961-vert Poisson surface fitted to a one-sided shell.
+
+
+[6] A diagnostic metric that did not survive its own control
+--------------------------------------------------------------
+Date:        2026-09-23
+Fingerprint: r13 reported the scorer's spread over 252 rotation hypotheses — range 1.75,
+             std 0.196, 48/252 within 1% of the top — and concluded the orientation was
+             unidentifiable, "the summit of a plateau, not a peak". That was published
+             in RESULTS.md and README.md before the control ran.
+
+Cause:       The scores are computed AFTER refinement. Every hypothesis is refined
+             toward the observation first, so hypotheses that converge onto the SAME
+             pose legitimately end up with the same score. A flat top therefore means
+             agreement, not ambiguity — the exact opposite of the reading given.
+
+Refuted by:  mustard0, which returns a CORRECT pose, is flatter at the top than ours:
+
+                                  ours      mustard0
+                margin over top-2  0.5000    0.0000   (an exact tie)
+                within 1% of top   48/252    91/252
+
+             A metric on which the known-good case scores worse than the known-bad case
+             does not discriminate, whatever story can be told about it.
+
+Fix:         r14 replaces it with pose clustering — pairwise geodesic angle among the
+             top-16 refined poses. If they are one orientation reached from different
+             starts, the angles are small and the estimate is determined; if they are
+             scattered, the scorer is choosing between orientations it cannot tell
+             apart. Measures the quantity the earlier metric was assumed to proxy.
+
+Lesson kept: the metric was designed, run, interpreted and published in one pass, and
+             the control that would have checked it was already queued. Reading a result
+             before its control lands is how a plausible story gets into a README.
+
+
+[7] A gate check that could not fire on the input it was written for
+----------------------------------------------------------------------
+Date:        2026-09-23
+Fingerprint: e2e_pose.py refused `chair_4` on translation and rotation, never on depth,
+             despite the pose sitting 60.8 cm behind the measured surface.
+
+Cause:       The depth tolerance was half the instance's 3-D EXTENT. `chair_4` is a
+             coarse proposal spanning 1.58 m, so the tolerance was 78.9 cm and a 60.8 cm
+             error passed. The bound was not wrong, it was vacuous — and it scaled with
+             the segmentation's opinion of the object's size, which is the very thing
+             the depth check exists not to trust.
+
+Fix:         Bound by the depth the camera ACTUALLY SEES: 5th-95th percentile of masked
+             depth, plus a 10 cm margin. On these frames the visible surface is a
+             13.4 cm slab, so the tolerance drops 78.9 -> 23.4 cm and the check fires.
+             Now uses only the depth image, independent of the segmentation.
+
+Metric before/after:  depth check on chair_4:  PASSES (60.8 < 78.9)  ->  FAILS
+                      reasons reported per frame:  2  ->  3
+
+Also corrected: an earlier write-up of this run claimed all three checks fired
+"including the depth one". They did not. The gate refused on two.
+
+
 VERIFICATION STATUS — local vs cloud
 --------------------------------------
 LOCALLY VERIFIED (CPU, no nvdiffrast, no pytorch3d):

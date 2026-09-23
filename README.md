@@ -51,9 +51,10 @@ RGB-D ──▶ ORB-SLAM3 / DROID-SLAM ──▶ TSDF fusion ──▶ OpenMask3
 
 ### [Object-centric RGB-D perception stack](pipeline/)
 
-The stack above. Runs end to end on real TUM RGB-D on CPU. FoundationPose now registers and tracks
-on a T4 against a mesh cut from our own TSDF — but its pose is **175.63°** from our map's, so
-stage 4 gates it out and the chain stays position-only. The project page leads with that limit.
+The stack above. Runs end to end on real TUM RGB-D on CPU. FoundationPose registers correctly on
+upstream's own demo data (**2.06 cm**), so the port is validated — but on a mesh cut from our TSDF
+its pose is **175.63°** off, so stage 4 gates it out and the chain stays position-only. The limit
+is our 695 px mask over a one-sided shell, and the project page leads with that.
 
 ### [DexVLA](DexVLA_Robotics/) — VLM with a plug-in diffusion expert
 
@@ -70,7 +71,7 @@ over ZMQ from the ROS2 bridge.
 |---|---|---|
 | **Perception stack** — SLAM → graph → VLA | **runs end to end**, stages 1–6 | ORB-SLAM3 ATE 1.03 cm reproduced |
 | **OpenMask3D** — sparse conv + Mask3D | **0/0/0**, 1e-10 vs `nn.Conv3d` | mIoU / open-vocab recall — needs ScanNet200 GT |
-| **FoundationPose** | **0/0/0**; `register()` + `track_one()` run on T4 | pose **refused** by the stage-4 gate (175.63° rotation error). Upstream `demo_data/mustard0` is the pending control |
+| **FoundationPose** | **0/0/0**; correct pose on upstream `demo_data/mustard0` (**2.06 cm**) | pose on OUR mesh **refused** by the stage-4 gate (175.63°) — the input is the limit, not the port |
 | GR00T N1.6-3B | checkpoint loads 0/0/0 (3.29 B params) | LIBERO / SimplerEnv success rate |
 | DexVLA | ScaleDP-H Stage-1 head loads 0-unexpected | **Stage 1 only, real-robot eval** — controlled baseline, not a reproduction |
 | DROID-SLAM | `droid.pth` loads 0/0/0 | **never executed** — `lietorch`/`droid_backends` are CUDA-compile-only |

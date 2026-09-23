@@ -76,9 +76,10 @@ def check_pose(
     origin_cam: np.ndarray,
     R_world_to_cam: np.ndarray,
     depth_median_m: float | None,
-    depth_extent_m: float,
+    depth_span_m: float,
     max_translation_cm: float,
     max_rotation_deg: float,
+    depth_margin_cm: float = 10.0,
 ) -> PoseCheck:
     """Corroborate one pose against the map and the depth image.
 
@@ -89,14 +90,20 @@ def check_pose(
     translation_cm = float(np.linalg.norm(T[:3, 3] - np.asarray(origin_cam, float)) * 100)
     rotation_deg = rotation_error_deg(T[:3, :3], R_world_to_cam)
 
-    # How far behind the measured surface the origin sits. The centroid is legitimately
-    # behind the visible face — by up to half the object's depth — so only an excess
-    # beyond that is evidence of a bad pose.
+    # How far behind the measured surface the origin sits, bounded by how deep the
+    # surface the camera ACTUALLY SEES is (5th-95th percentile of masked depth).
+    #
+    # This used to be bounded by half the instance's 3-D extent, which is nearly inert on
+    # a coarse proposal: `chair_4` spans 1.58 m, so the tolerance was 79 cm and a 60.8 cm
+    # error passed. The visible surface is a 13.4 cm slab. Using the observation rather
+    # than the segmentation's opinion of the object's size also keeps this check
+    # independent of the segmentation, which is the only reason it is worth having
+    # alongside the translation check.
     if depth_median_m is None:
         behind_cm, depth_bad = 0.0, False
     else:
         behind_cm = float((T[2, 3] - depth_median_m) * 100)
-        depth_bad = behind_cm > (depth_extent_m / 2.0) * 100
+        depth_bad = behind_cm > depth_span_m * 100 + depth_margin_cm
 
     reasons = []
     if translation_cm > max_translation_cm:
@@ -104,8 +111,8 @@ def check_pose(
     if rotation_deg > max_rotation_deg:
         reasons.append(f"rotation {rotation_deg:.1f} deg > {max_rotation_deg:.0f} deg")
     if depth_bad:
-        reasons.append(f"origin {behind_cm:.1f} cm behind the measured surface, "
-                       f"more than the object's {depth_extent_m*100:.0f} cm depth allows")
+        reasons.append(f"origin {behind_cm:.1f} cm behind the measured surface, which is "
+                       f"only {depth_span_m*100:.1f} cm deep")
 
     return PoseCheck(frame=frame, translation_cm=translation_cm, rotation_deg=rotation_deg,
                      behind_surface_cm=behind_cm, accepted=not reasons, reasons=reasons)
@@ -149,7 +156,7 @@ def main() -> int:
 
     # Depth medians under the mask, if the bundle's depth images are still on disk. They
     # are what makes the third check independent of the segmentation.
-    depth_medians: list[float | None] = []
+    depth_stats: list[tuple[float | None, float]] = []
     try:
         import cv2
         for rec in frames:
@@ -157,22 +164,23 @@ def main() -> int:
             d = cv2.imread(str(BUNDLE / f"depth_{i:03d}.png"), cv2.IMREAD_ANYDEPTH)
             m = cv2.imread(str(BUNDLE / f"mask_{i:03d}.png"), cv2.IMREAD_GRAYSCALE)
             z = (d.astype(np.float32) / meta["depth_scale"])[(m > 0) & (d > 0)]
-            depth_medians.append(float(np.median(z)) if z.size else None)
+            if not z.size:
+                depth_stats.append((None, 0.0))
+                continue
+            p5, p95 = np.percentile(z, [5, 95])
+            depth_stats.append((float(np.median(z)), float(p95 - p5)))
     except ImportError:
-        depth_medians = [None] * len(frames)
+        depth_stats = [(None, 0.0)] * len(frames)
         print("[4 pose ]  no cv2 — skipping the depth check")
-
-    extent = np.asarray(meta.get("extent_m", [0.0, 0.0, 0.0]), float)
-    depth_extent = float(extent.max()) if extent.any() else 1.0
 
     checks = [
         check_pose(T, frame=rec["frame"],
                    origin_cam=rec["mesh_origin_cam"],
                    R_world_to_cam=np.asarray(rec["R_world_to_cam"], float),
-                   depth_median_m=dm, depth_extent_m=depth_extent,
+                   depth_median_m=dm, depth_span_m=span,
                    max_translation_cm=args.max_translation_cm,
                    max_rotation_deg=args.max_rotation_deg)
-        for T, rec, dm in zip(poses, frames, depth_medians)
+        for T, rec, (dm, span) in zip(poses, frames, depth_stats)
     ]
     for c in checks:
         print(c.as_row())

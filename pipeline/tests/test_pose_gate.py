@@ -26,11 +26,11 @@ def pose(t=(0, 0, 2.0), R=None) -> np.ndarray:
     return T
 
 
-def gate(T, *, origin=(0, 0, 2.0), R_ref=None, depth=None, extent=1.0,
+def gate(T, *, origin=(0, 0, 2.0), R_ref=None, depth=None, span=1.0,
          max_t=10.0, max_r=30.0):
     return check_pose(T, frame=0, origin_cam=np.asarray(origin, float),
                       R_world_to_cam=np.eye(3) if R_ref is None else R_ref,
-                      depth_median_m=depth, depth_extent_m=extent,
+                      depth_median_m=depth, depth_span_m=span,
                       max_translation_cm=max_t, max_rotation_deg=max_r)
 
 
@@ -78,26 +78,38 @@ def test_rotation_alone_can_fail_an_otherwise_perfect_pose():
     assert "rotation" in c.reasons[0]
 
 
-def test_centroid_behind_the_surface_is_allowed_within_the_object_depth():
-    # A 1 m deep object seen face-on at 2.0 m has its centroid at ~2.5 m. Legitimate.
-    c = gate(pose(t=(0, 0, 2.4)), origin=(0, 0, 2.4), depth=2.0, extent=1.0)
+def test_centroid_behind_the_surface_is_allowed_within_the_observed_depth():
+    # A surface spanning 0.5 m in depth legitimately puts the origin ~0.4 m behind the
+    # median. Within span + margin, so allowed.
+    c = gate(pose(t=(0, 0, 2.4)), origin=(0, 0, 2.4), depth=2.0, span=0.5)
     assert c.accepted, c.reasons
 
 
 def test_origin_too_far_behind_the_surface_is_refused():
-    c = gate(pose(t=(0, 0, 3.0)), origin=(0, 0, 3.0), depth=2.0, extent=1.0)
+    c = gate(pose(t=(0, 0, 3.0)), origin=(0, 0, 3.0), depth=2.0, span=0.1)
     assert not c.accepted
     assert "behind the measured surface" in c.reasons[0]
 
 
+def test_depth_check_uses_the_observed_slab_not_the_instance_extent():
+    """The regression that matters: chair_4 spans 1.58 m in 3-D but the camera sees a
+    13.4 cm slab. Bounding by half the extent gave a 79 cm tolerance and let a 60.8 cm
+    error through; bounding by the observed span refuses it."""
+    c = gate(pose(t=(0.5465, 0.4297, 2.7108)), origin=(0.3879, 0.5824, 2.05),
+             depth=2.103, span=0.134)
+    assert not c.accepted
+    assert c.behind_surface_cm == pytest.approx(60.78, abs=0.05)
+    assert any("behind the measured surface" in r for r in c.reasons)
+
+
 def test_depth_check_is_skipped_when_depth_is_unavailable():
-    c = gate(pose(t=(0, 0, 9.0)), origin=(0, 0, 9.0), depth=None, extent=1.0)
+    c = gate(pose(t=(0, 0, 9.0)), origin=(0, 0, 9.0), depth=None, span=1.0)
     assert c.accepted and c.behind_surface_cm == 0.0
 
 
 def test_all_three_failures_are_reported_together():
     c = gate(pose(t=(1.0, 0, 3.0), R=R_z(120.0)), origin=(0, 0, 2.0),
-             depth=2.0, extent=0.5)
+             depth=2.0, span=0.05)
     assert not c.accepted and len(c.reasons) == 3
 
 
@@ -106,7 +118,7 @@ def test_all_three_failures_are_reported_together():
 def test_chair4_register_pose_is_refused_on_translation():
     """v10's register() output against the centroid our map reports: 72.14 cm."""
     c = gate(pose(t=(0.5673, 0.4239, 2.7305)), origin=(0.3879, 0.5824, 2.05),
-             depth=2.103, extent=1.58)
+             depth=2.103, span=0.134)
     assert not c.accepted
     assert c.translation_cm == pytest.approx(72.14, abs=0.05)
 

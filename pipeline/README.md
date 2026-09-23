@@ -75,7 +75,8 @@ Three results carry the project, each measured and each with its own section in
 from our own TSDF, with a **2.08 cm** world-frame spread over 8 frames. That is
 self-consistency, not accuracy. Its pose disagrees with our segmentation centroid by
 **72 cm**, and the disagreement is a **175.63° rotation error**, so no pose accuracy is
-claimed yet.
+claimed yet. Upstream's own `demo_data/mustard0` runs correctly through the same code
+path (**2.06 cm**), so the limit is our mesh and mask, not the port.
 
 The 6-DoF path is nonetheless wired: `tools/e2e_pose.py` consumes the pose and calls
 `refine_with_pose` **behind a gate** on translation, rotation and depth. On today's

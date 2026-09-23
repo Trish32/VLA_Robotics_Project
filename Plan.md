@@ -55,28 +55,39 @@ See `foundationpose_6dof/bug_log.txt` entry [4].
    convention is understood — but **99.5° away** from the direction the map predicts,
    which lower-bounds the rotation error. Measured directly against `R_world_to_cam`:
    **175.63°**. The object is essentially flipped.
-4. **Identifiability — the explanation, pending the control.** `register()` scores 252
-   hypotheses spanning the whole rotation group; the scores span **1.75 points** (std
-   0.196) with **48/252 within 1% of the top**. The pose is the top of a plateau, so no
-   amount of refinement fixes it — and a one-sided shell flipped in-plane renders nearly
-   the same depth, which is exactly the 180° ambiguity observed.
+4. **The control — run, and it convicts our input.** Upstream's `demo_data/mustard0`
+   through the identical code path returns a **correct** pose: origin 2.06 cm behind the
+   measured surface, against a 9.6 cm half-depth. The port, the checkpoints and the
+   adaptation layer are sound. The difference is the input — 695 px over a one-sided
+   Poisson shell, against 3,252 px over a CAD mesh.
+
+   *A metric that failed its own control:* r13 read the scorer's flat top (48/252 within
+   1%) as "orientation unidentifiable". mustard0 is flatter — an exact tie at the top,
+   91/252 within 1% — and still correct, because scores are computed after refinement so
+   converged hypotheses legitimately tie. r14 measures pose clustering instead. See
+   `foundationpose_6dof/bug_log.txt` [6].
 
 An earlier version of this page blamed the 72 cm on a frame convention, on the strength
 of `reset_object` subtracting the mesh's bbox centre. `estimater.py:233` undoes that
 subtraction before returning. The correction is kept rather than quietly edited out
 because the failed fix is what produced check 3.
 
-**The mask is still the leading hypothesis for *why*.** 695 px, where a 1.58 m object at
-2 m under fx = 535 should subtend ~410 px across — a one-sided Poisson shell seen through
-a sparse partial view carries little signal to fix an orientation. The decisive test is
-upstream's own `demo_data/mustard0`: a clean CAD mesh with a full mask separates "our
-bundle is bad" from "FoundationPose is misbehaving", and it is what the Fidelity Rule
-prescribes anyway. **Queued as kernel r12.**
+**The mask is the cause, now with the control to back it.** 695 px, where a 1.58 m object
+at 2 m under fx = 535 should subtend ~410 px across — a one-sided Poisson shell seen
+through a sparse partial view. mustard0 gets 3,252 px over a CAD mesh and lands the pose.
+**What would close it:** a denser fusion (smaller `--stride`) for bigger masks, and a
+cleaner instance than a 1.58 m coarse proposal — `chair_4` is a region, not an object.
 
 **Wired regardless:** `pipeline/tools/e2e_pose.py` consumes the pose and gates it on
 translation, rotation and depth before it reaches the world model. Run against the real
-r12 output it refuses **0/8 frames corroborating** — median 73.02 cm, 175.86° — and the
-position-only pose from stage 3 stands. 16 tests cover the gate.
+r12 output it refuses **0/8 frames corroborating** — median 73.02 cm, 175.86°, origin
+65 cm behind a surface only 13 cm deep — and the position-only pose from stage 3 stands.
+17 tests cover the gate.
+
+The depth check originally could not fire: its tolerance was half the instance's 3-D
+extent, and `chair_4` spans 1.58 m, so a 60.8 cm error sat inside a 78.9 cm bound. It now
+uses the depth the camera actually sees (5th–95th percentile under the mask, a 13.4 cm
+slab), which is also what keeps it independent of the segmentation. See `bug_log.txt` [7].
 
 ---
 
