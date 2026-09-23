@@ -10,13 +10,17 @@ Model-based pose estimation and tracking: `register(K, rgb, depth, ob_mask, mesh
 ## The limit, up front
 
 `register()` and `track_one()` **do run** on a Tesla T4 against a mesh cut from our own
-TSDF, and the tracker is strongly self-consistent — **2.08 cm** world-frame spread over
-8 frames.
+TSDF, and the tracker is self-consistent — **2.08 cm** world-frame spread over 8 frames.
+That bounds drift; it is not an accuracy result, because a tracker locked onto a wrong
+pose holds it just as steadily.
 
-**But no pose accuracy is claimed.** The returned pose disagrees with our own
-segmentation centroid by **72 cm**, and neither of those is ground truth, so nothing here
-says which is right. Separating "our mesh is bad" from "the model is misbehaving" needs
-upstream's own `demo_data` — see [Plan.md](Plan.md).
+**No pose accuracy is claimed, and the pose is refused downstream.** The returned pose
+disagrees with our segmentation centroid by **72 cm**, and the disagreement is a
+**rotation error of at least 99.5°** — measured by moving the mesh origin a known 52.9 cm
+and watching the answer move the right distance in the wrong direction. Neither estimate
+is ground truth, so this does not say which is right; separating "our mesh is bad" from
+"the model is misbehaving" needs upstream's own `demo_data/mustard0` — see
+[Plan.md](Plan.md) and `bug_log.txt` [4].
 
 ## Where the mesh comes from — no CAD models
 

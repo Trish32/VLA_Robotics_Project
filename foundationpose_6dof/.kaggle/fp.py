@@ -17,7 +17,7 @@
 # load, which is the Fidelity Rule's first half and cannot be checked on the Mac.
 import os, subprocess, sys, torch, traceback
 
-KERNEL_VERSION = "v10-mycpp-register"
+KERNEL_VERSION = "v12-mustard-control"
 print(f"=== {KERNEL_VERSION} ===", flush=True)
 
 def sh(label, cmd, tail=2500):
@@ -214,12 +214,30 @@ try:
           flush=True)
     pose = np.asarray(est.register(K=K, rgb=rgb, depth=depth, ob_mask=mask,
                                    iteration=5)).reshape(4, 4)
-    ours = np.array(meta["frames"][0]["centroid_cam"])
-    gap = float(np.linalg.norm(pose[:3, 3] - ours))
-    print(f"\n  register  t = {np.round(pose[:3, 3], 4).tolist()} m", flush=True)
-    print(f"  our map   t = {np.round(ours, 4).tolist()} m", flush=True)
-    print(f"  |diff| = {gap*100:.2f} cm   (agreement between two estimates, "
-          f"NOT ground truth)", flush=True)
+
+    # `register()` returns the pose of the mesh AS SUPPLIED: reset_object centres it, and
+    # estimater.py:233 (`poses[0] @ get_tf_to_centered_mesh()`) un-centres the answer.
+    # v11 re-centred the mesh to "compensate" for a subtraction that was already undone,
+    # which only moved the measurement point and made the residual worse, 72.1 -> 112.8
+    # cm. The bundle is back to a point-centroid origin and that is the reference.
+    origin = np.array(meta["frames"][0]["mesh_origin_cam"])
+    print(f"\n  register    t = {np.round(pose[:3, 3], 4).tolist()} m", flush=True)
+    print(f"  map says    t = {np.round(origin, 4).tolist()} m", flush=True)
+    print(f"  translation residual = {np.linalg.norm(pose[:3,3]-origin)*100:6.2f} cm",
+          flush=True)
+
+    # The rotation, measured directly rather than inferred from an origin probe. The mesh
+    # is cut out of the world cloud unrotated, so its frame is the world frame up to
+    # translation and the estimate should reproduce R_world_to_cam.
+    def rot_err_deg(A, B):
+        return float(np.degrees(np.arccos(np.clip((np.trace(A @ B.T) - 1) / 2, -1, 1))))
+    R_ref = np.array(meta["frames"][0]["R_world_to_cam"])
+    print(f"  rotation    residual = {rot_err_deg(pose[:3,:3], R_ref):6.2f} deg",
+          flush=True)
+    # Depth under the mask says where the observed surface is; a pose far behind it is
+    # wrong regardless of which reference point is used.
+    zs = depth[mask & (depth > 0)]
+    print(f"  median depth under mask    = {float(np.median(zs)):.3f} m", flush=True)
 
     track = [pose]
     for i in range(1, len(meta["frames"])):
@@ -233,8 +251,104 @@ try:
     for i, w in enumerate(world):
         print(f"    {i}  world t = {np.round(w, 3).tolist()}", flush=True)
     # A static object fused into a world frame must not move. No ground truth needed.
+    # It is a consistency check, NOT an accuracy one: a tracker locked onto a wrong pose
+    # holds it just as steadily as one locked onto the right pose.
     print(f"\n  world-frame spread = {spread*100:.2f} cm", flush=True)
+
+    # Write the poses out. Until r12 they were only ever printed, so no downstream stage
+    # could consume them and the 6-DoF path stopped at the log.
+    json.dump({
+        "ok": True, "source": f"kaggle:foundationpose-nvdiffrast {KERNEL_VERSION}",
+        "target": meta["target"], "label": meta["label"],
+        "sequence": meta["sequence"],
+        "poses_cam_obj": [T.tolist() for T in track],
+        "world_spread_cm": spread * 100,
+        "translation_residual_cm": float(np.linalg.norm(pose[:3, 3] - origin) * 100),
+        "rotation_residual_deg": rot_err_deg(pose[:3, :3], R_ref),
+    }, open("/kaggle/working/pose_result.json", "w"), indent=1)
+    print("  -> /kaggle/working/pose_result.json", flush=True)
     print("RESULT: REGISTER_OK")
 except Exception:
     traceback.print_exc()
     print("RESULT: REGISTER_FAILED")
+
+
+# ---------------------------------------------------------------------------- control
+# The Fidelity Rule test, and it is deliberately LAST so it cannot take the primary
+# result down with it.
+#
+# Our own bundle gives a 72 cm translation residual and a >= 99 deg rotation error. That
+# is either (a) our TSDF mesh and 695-px mask being too poor to fix an orientation, or
+# (b) this adaptation being broken. Nothing measured so far separates those, because
+# every number came from our own data.
+#
+# mustard0 is upstream's own demo: a clean CAD mesh, a full mask, a sequence the authors
+# publish results on. Running it on the SAME code path answers the question directly.
+# A small residual here convicts our bundle; a large one convicts the port.
+print(f"\n{'='*70}\n[control: upstream demo_data/mustard0]\n{'='*70}", flush=True)
+try:
+    import numpy as np, cv2, trimesh, json
+    import nvdiffrast.torch as dr
+    from pathlib import Path
+    from estimater import FoundationPose
+
+    D = f"{FP}/demo_data"
+    # --remaining-ok: the folder holds hundreds of frames and gdown caps at 50 per
+    # folder. We need frame 0 and a short track, so the cap is not a problem.
+    sh("fetch mustard0", f"cd {FP} && pip -q install gdown && "
+       f"gdown --folder --remaining-ok -O {D} "
+       f"https://drive.google.com/drive/folders/1pRyFmxYXmAnpku7nGRioZaKrVJtIsroP "
+       f"2>&1 | tail -5; find {D} -maxdepth 3 -type d | head -20")
+
+    root = f"{D}/mustard0"
+    K_c = np.loadtxt(f"{root}/cam_K.txt").reshape(3, 3)
+    mesh_c = trimesh.load(sorted(Path(f"{root}/mesh").glob("*.obj"))[0], process=False)
+    rgb_f = sorted(Path(f"{root}/rgb").glob("*.png"))[0]
+    dep_f = sorted(Path(f"{root}/depth").glob("*.png"))[0]
+    msk_f = sorted(Path(f"{root}/masks").glob("*.png"))[0]
+
+    rgb_c = cv2.cvtColor(cv2.imread(str(rgb_f)), cv2.COLOR_BGR2RGB)
+    dep_c = cv2.imread(str(dep_f), cv2.IMREAD_ANYDEPTH).astype(np.float32) / 1000.0
+    dep_c[(dep_c < 0.1) | (dep_c > 4.0)] = 0
+    msk_c = cv2.imread(str(msk_f), cv2.IMREAD_GRAYSCALE) > 0
+    print(f"  mesh {len(mesh_c.vertices)} verts, extents "
+          f"{np.round(mesh_c.extents, 3).tolist()} m", flush=True)
+    print(f"  frame {rgb_f.name}: mask {int(msk_c.sum())} px "
+          f"(ours was 695 px)", flush=True)
+
+    est_c = FoundationPose(
+        model_pts=mesh_c.vertices.astype(np.float32),
+        model_normals=mesh_c.vertex_normals.astype(np.float32),
+        mesh=mesh_c, scorer=scorer, refiner=refiner,
+        glctx=dr.RasterizeCudaContext(), debug=0)
+    pose_c = np.asarray(est_c.register(K=K_c, rgb=rgb_c, depth=dep_c, ob_mask=msk_c,
+                                       iteration=5)).reshape(4, 4)
+    print(f"\n  register t = {np.round(pose_c[:3, 3], 4).tolist()} m", flush=True)
+
+    # No annotation needed for the check that matters here: a correct pose puts the
+    # object's origin about half its depth behind the surface the depth camera sees.
+    z_obs = float(np.median(dep_c[msk_c & (dep_c > 0)]))
+    behind = (pose_c[2, 3] - z_obs) * 100
+    half_depth = float(mesh_c.extents.max()) / 2 * 100
+    print(f"  median depth under mask = {z_obs:.3f} m", flush=True)
+    print(f"  origin sits {behind:+.2f} cm behind it "
+          f"(half the mesh depth is {half_depth:.1f} cm)", flush=True)
+
+    gt_dir = Path(f"{root}/annotated_poses")
+    if gt_dir.is_dir() and (gt := sorted(gt_dir.glob("*.txt"))):
+        T_gt = np.loadtxt(gt[0]).reshape(4, 4)
+        d = np.linalg.norm(pose_c[:3, 3] - T_gt[:3, 3]) * 100
+        r = float(np.degrees(np.arccos(np.clip(
+            (np.trace(pose_c[:3, :3] @ T_gt[:3, :3].T) - 1) / 2, -1, 1))))
+        print(f"\n  vs annotated pose: {d:.2f} cm, {r:.2f} deg   <- ground truth",
+              flush=True)
+    else:
+        print("\n  no annotated_poses/ in the download — depth check only", flush=True)
+
+    json.dump({"ok": True, "pose": pose_c.tolist(), "median_depth_m": z_obs,
+               "behind_surface_cm": behind, "mask_px": int(msk_c.sum())},
+              open("/kaggle/working/control_mustard0.json", "w"), indent=1)
+    print("RESULT: CONTROL_OK")
+except Exception:
+    traceback.print_exc()
+    print("RESULT: CONTROL_FAILED")

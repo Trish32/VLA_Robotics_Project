@@ -39,22 +39,36 @@ verts / 9,657 faces, extents 1.573 × 1.168 × 0.986 m.
 |---|---|
 | `register()` | **returns a pose** — t = [0.567, 0.424, 2.730] m |
 | `track_one()` across 8 frames | all succeed |
-| **world-frame spread** | **2.08 cm** |
+| **world-frame spread** (self-consistency) | **2.08 cm** |
 | agreement with our segmentation centroid | **72.14 cm** apart |
+| **rotation error** vs `R_world_to_cam` | **≥ 99.5°** |
 
-**The spread is the result that means something.** Composing each tracked pose with its
-camera pose puts the object in the world frame, and a static object must not move there.
-Over 8 frames it moves **2.08 cm** — so the tracker is strongly self-consistent, and that
-check needed no ground truth to be meaningful.
+**The spread means less than it appears to.** Composing each tracked pose with its camera
+pose puts the object in the world frame, where a static object must not move; over 8
+frames it moves **2.08 cm**. That is a *consistency* check. A tracker locked onto a wrong
+pose holds it exactly as steadily as one locked onto the right pose, so this bounds drift
+and says nothing about accuracy.
 
-**The 72 cm disagreement is not explained, and is not evidence either way.** Two
-independent estimates of the same object differ: `register()` places it at z = 2.73 m,
-our segmentation centroid at z = 2.05 m — most of the gap is in depth. Neither is ground
-truth, so this does not say which is wrong. A hypothesis worth testing rather than
-asserting: the mask is **695 px**, while a 1.58 m object at 2 m under fx = 535 should
-subtend roughly 410 px across — so the mask is a sparse partial view, and the two methods
-may be centring on different subsets of the object. Until that is checked, **no pose
-accuracy is claimed**.
+**The disagreement is a rotation error, not a translation one.** Re-centring the mesh
+moved its origin a known **52.9 cm**; FoundationPose's answer moved **53.5 cm** — the
+right magnitude, confirming the pose convention is understood — but **99.5° away** from
+the direction our map predicts. Both are the same offset vector in the camera frame, one
+rotated by the estimate and one by the true camera rotation, so the angle between them is
+a lower bound on the rotation error. The 72 cm translation residual is what a ≥99°
+orientation error looks like measured at a point offset from the rotation centre.
+
+*(An earlier revision of this page attributed the 72 cm to `reset_object` subtracting the
+mesh's bbox centre. `estimater.py:233` undoes that subtraction before returning, so the
+convention was never the cause — see `bug_log.txt` [4]. The failed fix is what produced
+the rotation measurement, so it is recorded rather than removed.)*
+
+**Why this is plausible but not yet attributed.** The mask is **695 px**, while a 1.58 m
+object at 2 m under fx = 535 should subtend roughly 410 px across — a one-sided Poisson
+shell seen through a sparse partial view carries little signal to fix an orientation. That
+is a hypothesis about *our input*, and the test that separates it from a broken port is
+upstream's own `demo_data/mustard0` (kernel r12). Until it runs, **no pose accuracy is
+claimed**, and `pipeline/tools/e2e_pose.py` refuses to admit the pose into the world
+model.
 
 ## The bug that blocked this for three rounds
 

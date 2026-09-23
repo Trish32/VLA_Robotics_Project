@@ -84,6 +84,56 @@ does not satisfy it; it needs `brew install libusb`. Nothing in the error messag
 at the wheel's own linkage, so it reads like a conda problem and is not one.
 
 
+[4] A 72 cm pose error blamed on a frame convention that does not exist
+------------------------------------------------------------------------
+Date:        2026-09-23
+Fingerprint: `register()` on our TSDF mesh returns t = [0.567, 0.424, 2.730] m while the
+             segmentation centroid it should match is at [0.388, 0.582, 2.050] m —
+             72.14 cm apart, with a 2.08 cm world-frame tracking spread saying the
+             tracker is perfectly steady.
+
+Cause (of the wrong diagnosis, which is the bug):
+             `estimater.reset_object` computes `model_center = (min+max)/2` and subtracts
+             it from the mesh vertices. Read alone, that says the returned pose is the
+             bbox centre's position whatever origin you supplied. On this instance the
+             Poisson surface over a one-sided shell is lopsided, so its bbox centre sits
+             52.9 cm from its point centroid — close enough to 72 cm to look like the
+             explanation. It is not. `estimater.py:233` un-centres the answer on the way
+             out (`best_pose = poses[0] @ get_tf_to_centered_mesh()`), so `register()`
+             returns the pose of the mesh AS SUPPLIED. The subtraction is internal and
+             already compensated. Half of the relevant code was read.
+
+Fix:         Reverted the re-centring in pipeline/tools/build_pose_bundle.py. The mesh
+             keeps its point-centroid origin, which is what the residual is measured
+             against.
+
+Metric before/after — the change made it WORSE, which is what identified it:
+             residual vs the origin actually supplied:  72.14 cm  ->  112.83 cm
+
+What the failed fix bought, which is why it is not merely an error:
+             Moving the origin a known 52.9 cm is a controlled probe. FoundationPose's
+             answer moved 53.5 cm — correct MAGNITUDE, confirming the compensation works
+             — but 99.5 deg away from the direction the map predicts. Both vectors are
+             the same offset in the camera frame, one rotated by the estimate and one by
+             the true camera rotation, so that angle is a LOWER BOUND on the rotation
+             error. The 72 cm was never a translation problem: the orientation is
+             essentially undetermined, and the translation residual is what that looks
+             like when measured at a point offset from the rotation centre.
+
+             A >= 99 deg rotation error is unsurprising for this input — a one-sided
+             Poisson shell seen through a 695 px mask carries almost no signal to fix an
+             orientation — but "unsurprising" is not "measured on the right input", so
+             r12 runs upstream's own demo_data/mustard0 through the same code path. A
+             small residual there convicts our bundle; a large one convicts the port.
+
+Consequence: the 2.08 cm tracking spread was being read as reassurance. It is a
+             consistency check, not an accuracy one — a tracker locked onto a wrong pose
+             holds it exactly as steadily. pipeline/tools/e2e_pose.py now gates on
+             translation AND rotation AND depth before any pose reaches the world model,
+             because the position-only fallback is honestly uninformative about rotation
+             whereas a confident wrong rotation gets acted on.
+
+
 VERIFICATION STATUS — local vs cloud
 --------------------------------------
 LOCALLY VERIFIED (CPU, no nvdiffrast, no pytorch3d):

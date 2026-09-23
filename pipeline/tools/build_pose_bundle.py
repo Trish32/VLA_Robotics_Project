@@ -19,10 +19,13 @@ Two things this writes that are easy to get wrong:
     the instance's points into the frame with that frame's camera pose and intrinsics,
     with an occlusion test against measured depth — without which the mask covers
     whatever is on the far side of the room too.
-  * **The mesh is in the instance's own frame, centred on its centroid.** FoundationPose
-    returns `T_cam_obj` relative to the mesh's origin, so a mesh left in world
-    coordinates would return a pose offset by the world translation, which still looks
-    like a plausible pose.
+  * **The mesh origin is the instance's point centroid, and that is what the returned
+    pose refers to.** `estimater.reset_object` does subtract `(min_xyz + max_xyz) / 2`
+    from the vertices, but `estimater.py:233` undoes it on the way out
+    (`poses[0] @ get_tf_to_centered_mesh()`), so `register()` returns the pose of the
+    mesh AS SUPPLIED. Re-centring the mesh here to "compensate" therefore compensates
+    for nothing — it only moves the point the residual is measured at. Measured: doing
+    so moved the origin 52.9 cm and made the residual worse, 72.1 -> 112.8 cm.
 
     conda run -n foundationpose_vl python pipeline/tools/build_pose_bundle.py
 """
@@ -98,7 +101,7 @@ def main() -> int:
     # ------------------------------------------------------------------ mesh
     OUT.mkdir(parents=True, exist_ok=True)
     pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(inst_pts - centroid)   # instance frame
+    pcd.points = o3d.utility.Vector3dVector(inst_pts - centroid)   # provisional origin
     pcd.colors = o3d.utility.Vector3dVector(inst_col)
     pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
     pcd.orient_normals_consistent_tangent_plane(20)
@@ -116,9 +119,24 @@ def main() -> int:
             "Poisson produced no triangles inside the instance box — the instance is "
             "probably too sparse to mesh. Try a denser fusion (smaller --stride)."
         )
+    # The mesh keeps the point-centroid origin it was built with. FoundationPose centres
+    # it internally and un-centres the answer (`estimater.py:233`), so the returned pose
+    # is the centroid's position and no compensation belongs here.
+    #
+    # `bbox_centre` is recorded but NOT applied: it is how far a bbox-centre origin would
+    # sit from this one, which is worth knowing because the Poisson surface over a
+    # one-sided observed shell is lopsided (here 52.9 cm). Supplying the mesh at both
+    # origins is a free rotation probe — the returned translations must differ by
+    # `R_est @ bbox_centre`, so the angle against `R_world_to_cam @ bbox_centre` measures
+    # the rotation error without any ground truth. That is what exposed a >= 99 deg
+    # rotation error on this instance.
+    verts = np.asarray(mesh.vertices)
+    bbox_centre = (verts.min(axis=0) + verts.max(axis=0)) / 2.0
+    mesh_origin_world = centroid
     o3d.io.write_triangle_mesh(str(OUT / "mesh.obj"), mesh)
-    print(f"[bundle]  mesh {len(mesh.vertices)} verts / {len(mesh.triangles)} tris "
-          f"-> mesh.obj (instance frame, centred)")
+    print(f"[bundle]  mesh {len(mesh.vertices)} verts / {len(mesh.triangles)} tris")
+    print(f"[bundle]  origin = point centroid; a bbox-centre origin would sit "
+          f"{np.linalg.norm(bbox_centre)*100:.1f} cm away")
 
     # ---------------------------------------------------------------- frames
     traj = {}
@@ -180,13 +198,25 @@ def main() -> int:
         cv2.imwrite(str(OUT / f"mask_{written:03d}.png"), ob_mask)
         records.append({
             "frame": written, "stamp": stamp, "rgb": rel,
+            # The trajectory stamp. On this sequence it EQUALS the image stamp, because
+            # ORB-SLAM3 emits a pose per rgb frame — so `refine_with_pose`'s staleness
+            # guard is trivially satisfied here and this field proves nothing today. It
+            # is kept separate anyway so a source whose poses arrive on their own clock
+            # is carried correctly rather than silently passing one stamp twice.
+            "cam_stamp": float(stamps[j]),
             "cam_to_world": T.tolist(),
             "mask_pixels": int((ob_mask > 0).sum()),
             "visible_points": int(vis.sum()),
-            # Where our own map says the object is, in the camera frame. This is the
-            # position FoundationPose's answer gets compared against — it is not ground
-            # truth, it is the segmentation's opinion, which is the point of comparing.
-            "centroid_cam": (world_to_cam[:3, :3] @ centroid + world_to_cam[:3, 3]).tolist(),
+            # Where our own map says the object is, in the camera frame — the position
+            # FoundationPose's answer is compared against. Not ground truth: it is the
+            # segmentation's opinion, which is exactly what makes the comparison
+            # informative when the two disagree.
+            "mesh_origin_cam": (world_to_cam[:3, :3] @ mesh_origin_world
+                                + world_to_cam[:3, 3]).tolist(),
+            # The mesh is cut from the world cloud unrotated, so its frame IS the world
+            # frame up to translation. The pose's rotation should therefore reproduce
+            # this, which makes rotation error measurable without ground truth.
+            "R_world_to_cam": world_to_cam[:3, :3].tolist(),
         })
         written += 1
 
@@ -197,8 +227,13 @@ def main() -> int:
         "ok": True, "target": target, "label": labelled[row].get("label"),
         "sequence": fuse["sequence"], "camera": fuse["camera"],
         "K": K.tolist(), "depth_scale": 5000.0,
-        "mesh": "mesh.obj", "mesh_centroid_world": centroid.tolist(),
+        "mesh": "mesh.obj", "point_centroid_world": centroid.tolist(),
+        "mesh_origin_world": mesh_origin_world.tolist(),
+        "bbox_centre_instance": bbox_centre.tolist(),
         "instance_points": int(len(inst_pts)),
+        # The pose stage's depth check needs to know how deep the object is: a centroid
+        # legitimately sits behind the visible face, but only by so much.
+        "extent_m": (inst_pts.max(0) - inst_pts.min(0)).tolist(),
         "mesh_vertices": len(mesh.vertices), "mesh_triangles": len(mesh.triangles),
         "frames": records,
     }, open(OUT / "bundle.json", "w"), indent=1)

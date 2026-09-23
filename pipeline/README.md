@@ -71,12 +71,18 @@ Three results carry the project, each measured and each with its own section in
 ## The honest limit
 
 **FoundationPose now runs** — `register()` + `track_one()` on a T4 against a mesh cut
-from our own TSDF, with a **2.08 cm** world-frame spread over 8 frames. But its pose
-disagrees with our segmentation centroid by **72 cm**, and neither is ground truth, so no
-pose accuracy is claimed yet. The poses in *this* chain are still position-only with
-identity rotation, because that refined pose has not been fed back: a segmentation mask carries no orientation, and
+from our own TSDF, with a **2.08 cm** world-frame spread over 8 frames. That is
+self-consistency, not accuracy. Its pose disagrees with our segmentation centroid by
+**72 cm**, and the disagreement is a **rotation error of at least 99.5°**, so no pose
+accuracy is claimed yet.
+
+The 6-DoF path is nonetheless wired: `tools/e2e_pose.py` consumes the pose and calls
+`refine_with_pose` **behind a gate** on translation, rotation and depth. On today's
+numbers the gate refuses, so the poses in this chain stay position-only with identity
+rotation — a segmentation mask carries no orientation, and
 `observations.from_openmask3d` refuses to invent one rather than hand a planner an
-authoritative-looking wrong pose.
+authoritative-looking wrong pose. A stage that admitted the pose anyway would be strictly
+worse than one that has no pose at all.
 
 **Recognition is the weak stage.** Median top-1 CLIP margin is **0.011**; at that
 separation an argmax over a fixed vocabulary is close to arbitrary. Grounding no longer

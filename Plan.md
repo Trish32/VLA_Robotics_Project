@@ -38,24 +38,39 @@ both official checkpoints load and construct on `cuda:0` (scorer 15.77 M, refine
 **Done since:** `register()` and `track_one()` run on a T4 against that mesh —
 **2.08 cm world-frame spread** over 8 frames, so the tracker is strongly self-consistent.
 
-**Not done:** the pose disagrees with our segmentation centroid by **72.14 cm**, and
-nothing yet says which is wrong. See `foundationpose_6dof/Plan.md`.
+**Not done:** the pose disagrees with our map by **72.14 cm**, and the disagreement is
+**a rotation error of at least 99.5°**, not a translation one. See
+`foundationpose_6dof/bug_log.txt` entry [4].
 
-**What the two checks said.** Neither needs ground truth, and they disagree in an
-informative way:
+**What the three checks say.** None needs ground truth:
 
-1. **World-frame spread — passes.** Composing each tracked pose with its camera pose and
-   requiring a static object to stay static gives **2.08 cm** over 8 frames. A drifting
-   tracker cannot satisfy this by luck.
-2. **Agreement — open.** `register()` says z = 2.73 m, our segmentation centroid says
-   2.05 m. Agreement would have been evidence; disagreement does not say which is wrong.
+1. **World-frame spread — passes, and proves less than it looks.** A static object must
+   stay static once each tracked pose is composed with its camera pose: **2.08 cm** over
+   8 frames. That is a *consistency* check. A tracker locked onto a wrong pose holds it
+   exactly as steadily as one locked onto the right pose.
+2. **Agreement with the map — fails.** `register()` says z = 2.73 m; the segmentation
+   centroid says 2.05 m; median depth under the mask is 2.10 m.
+3. **Rotation — fails, and this is the real finding.** Moving the mesh origin a known
+   52.9 cm moved FoundationPose's answer 53.5 cm — right magnitude, so the pose
+   convention is understood — but **99.5° away** from the direction the map predicts.
+   Same offset vector, one rotated by the estimate and one by the true camera rotation,
+   so that angle is a lower bound on the rotation error.
 
-**The mask is the first hypothesis, and it is a hypothesis.** 695 px, where a 1.58 m
-object at 2 m under fx = 535 should subtend ~410 px across — a sparse partial view, so
-the two methods may be centring on different subsets. The decisive test is running
+An earlier version of this page blamed the 72 cm on a frame convention, on the strength
+of `reset_object` subtracting the mesh's bbox centre. `estimater.py:233` undoes that
+subtraction before returning. The correction is kept rather than quietly edited out
+because the failed fix is what produced check 3.
+
+**The mask is still the leading hypothesis for *why*.** 695 px, where a 1.58 m object at
+2 m under fx = 535 should subtend ~410 px across — a one-sided Poisson shell seen through
+a sparse partial view carries little signal to fix an orientation. The decisive test is
 upstream's own `demo_data/mustard0`: a clean CAD mesh with a full mask separates "our
 bundle is bad" from "FoundationPose is misbehaving", and it is what the Fidelity Rule
-prescribes anyway — validate against the original before trusting the adaptation.
+prescribes anyway. **Queued as kernel r12.**
+
+**Wired regardless:** `pipeline/tools/e2e_pose.py` consumes the pose and gates it on
+translation, rotation and depth before it reaches the world model — on today's numbers it
+**refuses**, and the position-only pose from stage 3 stands. 16 tests cover the gate.
 
 ---
 
@@ -125,10 +140,10 @@ on §1 too.
 
 Ordered by what unblocks the most, not by effort.
 
-1. **Explain the 72 cm** — run upstream's `demo_data/mustard0`. It is the only test that
-   separates our mesh from the model, and until it runs no pose accuracy is claimable.
-   Then feed the refined pose back through `refine_with_pose`, which has still only ever
-   seen synthesised input.
+1. **Explain the ≥99.5° rotation error** — run upstream's `demo_data/mustard0` (queued
+   as r12). It is the only test that separates our mesh from the model, and until it runs
+   no pose accuracy is claimable. `refine_with_pose` is now wired behind a gate
+   (`e2e_pose.py`), so the moment a pose passes, it flows; today it does not.
 2. **Ground-truth instance labels** — unblocks mIoU, the MobileSAM trade, the `inside`
    support test, and any statement about recognition. One resource, four gaps.
 3. **A CUDA box** — unblocks DROID-SLAM tracking and turns every MODELLED speedup into a
