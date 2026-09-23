@@ -210,11 +210,23 @@ def test_scorer_returns_a_breakdown_that_sums_to_the_total():
     assert 0 <= b.best() < 3
 
 
-def test_risk_weight_penalises_an_uncertain_rollout():
+def test_risk_is_off_by_default_because_it_was_measured_uncorrelated():
+    """Rank correlation between predicted spread and realised error is -0.071, so a
+    non-zero default would be weighting a quantity that does not predict anything."""
+    assert ScoreWeights().risk == 0.0
     z = SceneLatent(torch.zeros(2, 1, 6), torch.zeros(2, 4))
     z.slots[..., 3:] = 1.0
     unc = torch.tensor([[0.0, 0.0], [1.0, 1.0]])
     b = TrajectoryScorer(ScoreWeights())([z, z], unc, torch.zeros(2, 2, 3))
+    assert torch.all(b.risk == 0)
+
+
+def test_risk_penalises_an_uncertain_rollout_when_enabled():
+    """The term is correct in principle; only its default weight is a measurement."""
+    z = SceneLatent(torch.zeros(2, 1, 6), torch.zeros(2, 4))
+    z.slots[..., 3:] = 1.0
+    unc = torch.tensor([[0.0, 0.0], [1.0, 1.0]])
+    b = TrajectoryScorer(ScoreWeights(risk=6.0))([z, z], unc, torch.zeros(2, 2, 3))
     assert b.best() == 0, "the certain rollout must win when all else is equal"
 
 

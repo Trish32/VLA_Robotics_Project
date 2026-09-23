@@ -183,9 +183,15 @@ class DynamicsEnsemble(nn.Module):
         """Roll `actions` (B, N, A) forward N steps.
 
         Returns the predicted states (length N) and per-step epistemic uncertainty
-        (B, N) — the mean spread of member predictions about the slot GEOMETRY, in
-        metres, so the number stays physically readable rather than being a latent-space
-        distance nothing can interpret.
+        (B, N): the mean standard deviation across members over whatever the latent
+        actually carries — slot geometry for real slots (metres) and the robot state
+        (its own units, standardised in practice).
+
+        It must cover BOTH. An earlier version measured slot geometry only, so a model
+        with no object slots — which is exactly what the trained proprioceptive
+        checkpoint is — reported an uncertainty of identically zero at every horizon,
+        and the planner's risk term silently stopped existing. Measuring only part of
+        the latent means the parts it skips are treated as known.
 
         Each member is rolled along its OWN trajectory. Re-centring every member on the
         ensemble mean at each step would suppress exactly the divergence being measured,
@@ -199,14 +205,20 @@ class DynamicsEnsemble(nn.Module):
         for t in range(actions.shape[1]):
             a = actions[:, t]
             states = [m(s, a)[0] for m, s in zip(self.members, states)]
-            geom = torch.stack([s.slots[..., :6] for s in states])      # (E, B, M, 6)
-            means.append(SceneLatent(
-                torch.stack([s.slots for s in states]).mean(0),
-                torch.stack([s.robot for s in states]).mean(0), z.mask))
+            all_slots = torch.stack([s.slots for s in states])          # (E, B, M, D)
+            all_robot = torch.stack([s.robot for s in states])           # (E, B, R)
+            means.append(SceneLatent(all_slots.mean(0), all_robot.mean(0), z.mask))
             if len(self.members) == 1:
                 spreads.append(torch.zeros(z.batch, device=z.slots.device))
             else:
-                per_slot = geom.std(0).mean(-1)                          # (B, M)
                 m = z.mask.float()
-                spreads.append((per_slot * m).sum(-1) / m.sum(-1).clamp(min=1))
+                n_real = m.sum(-1)                                       # (B,)
+                per_slot = all_slots[..., :6].std(0).mean(-1)            # (B, M)
+                slot_unc = (per_slot * m).sum(-1) / n_real.clamp(min=1)
+                robot_unc = all_robot.std(0).mean(-1)                    # (B,)
+                # Average the components that exist. A scene with no slots is scored on
+                # the robot alone rather than on nothing.
+                have_slots = (n_real > 0).float()
+                spreads.append((slot_unc * have_slots + robot_unc)
+                               / (have_slots + 1.0))
         return means, torch.stack(spreads, dim=1)

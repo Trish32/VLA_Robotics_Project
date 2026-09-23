@@ -13,8 +13,10 @@ GR00T chunk ──▶ K candidates ──▶ ensemble rollout, N steps ──▶
 
 ## The limit, up front
 
-**The proprioceptive pathway is trained and beats both trivial baselines. The object
-pathway does not.** On the only object-motion data available — one episode of a single
+**The proprioceptive pathway beats both trivial baselines on aggregate error but loses
+on the typical sample. The object pathway is not validated at all.** Constant velocity
+is better on 91% of held-out samples; the learned model wins on global RMSE because it is
+substantially better in the tail, where the action matters. Read both numbers, not one. On the only object-motion data available — one episode of a single
 binary mask — the model scores *worse* than assuming the object does not move. Numbers
 and the split that produced them are in [RESULTS.md](RESULTS.md).
 
@@ -37,11 +39,13 @@ This is measured, not aesthetic: identity scores 0.0554 held out and constant ve
 on four demonstration episodes it never got there — it lost to constant velocity 0.0590
 to 0.0262. Starting at the stronger baseline, it wins.
 
-**Uncertainty is a deep ensemble, not a variance head.** A rollout compounds error, and a
-single network is as confident at step 20 as at step 1. Independently initialised members
-diverge where the data did not constrain them, and that divergence grows with horizon —
-which is the signal that stops the planner trusting a long rollout. A variance head would
-fit aleatoric noise and stay flat exactly where extrapolation begins.
+**Uncertainty is a deep ensemble, not a variance head** — and it only half works.
+Independently initialised members diverge where the data did not constrain them, and that
+divergence tracks how error grows with horizon almost exactly (14.1× predicted against
+14.2× realised over 8 steps). But within a horizon it does **not** predict which rollout
+will be wrong: rank correlation against realised error is **−0.071**. So the risk term's
+default weight is zero. The term is correct in principle; the measurement decides whether
+it is switched on, and today it says no.
 
 ## Scoring measures what the action *caused*
 

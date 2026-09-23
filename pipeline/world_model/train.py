@@ -205,12 +205,26 @@ def main() -> int:
         print(f"[wm] restored epoch {best_ep} (best validation {best_val:.5f})")
     final = evaluate(model, ds, test_idx, ds.n_slots, ds.slot_dim)
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
-    torch.save({"state_dict": model.state_dict(),
-                "slot_dim": max(ds.slot_dim, 1),
-                "robot_dim": int(ds.state_norm.mean.shape[0]),
-                "action_dim": int(ds.action_norm.mean.shape[0]),
-                "members": args.members, "hidden": args.hidden,
-                "layers": args.layers}, out / "dynamics.pt")
+    # Record the dims the MODEL was built with, not the raw data dims. With velocity
+    # carried, robot_dim is 2x the state width, and saving the state width instead
+    # makes every consumer rebuild a different architecture and fail to load.
+    ckpt = {"state_dict": model.state_dict(),
+            "slot_dim": max(ds.slot_dim, 1),
+            "robot_dim": int(ds.robot_dim),
+            "state_dim": int(ds.state_norm.mean.shape[0]),
+            "action_dim": int(ds.action_norm.mean.shape[0]),
+            "members": args.members, "hidden": args.hidden,
+            "layers": args.layers, "integrate_velocity": bool(ds.velocity),
+            "state_mean": ds.state_norm.mean, "state_std": ds.state_norm.std,
+            "action_mean": ds.action_norm.mean, "action_std": ds.action_norm.std}
+    # A checkpoint that cannot rebuild its own model is not a checkpoint. Verify here,
+    # where the failure is one line from its cause, rather than in a consumer.
+    from pipeline.world_model.dynamics import DynamicsEnsemble as _DE
+    _probe = _DE(ckpt["slot_dim"], ckpt["robot_dim"], ckpt["action_dim"],
+                 n_members=ckpt["members"], hidden=ckpt["hidden"],
+                 layers=ckpt["layers"], integrate_velocity=ckpt["integrate_velocity"])
+    _probe.load_state_dict(ckpt["state_dict"])
+    torch.save(ckpt, out / "dynamics.pt")
 
     print("\n[wm] held-out one-step RMSE (standardised units)")
     id_, md = final["identity_robot_rmse"], final["model_robot_rmse"]

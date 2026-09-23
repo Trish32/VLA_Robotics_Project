@@ -11,17 +11,31 @@ interpolation and reports it as generalisation.
 Split **3 train / 1 validation / 1 test episodes**. The epoch is chosen on the
 validation episode; the test episode is touched once.
 
-| predictor | held-out RMSE | uses the action? |
-|---|---|---|
-| identity — *nothing changes* | 0.05540 | no |
-| constant velocity | 0.02615 | no |
-| **learned dynamics** | **0.0202 – 0.0258** (3 seeds) | **yes** |
+| predictor | global RMSE | **median sample** | uses the action? |
+|---|---|---|---|
+| identity — *nothing changes* | 0.05540 | 0.02698 | no |
+| constant velocity | 0.02666 | **0.00167** | no |
+| **learned dynamics** | **0.01929** | 0.00770 | **yes** |
 
-**The model beats both, and the margin is not stable.** Against constant velocity the
-gain ranges **+1.2% to +22.6%** across three seeds — mean around +11%. On three training
-episodes that is a weak result and is reported as one. Beating identity shows the model
-moved; beating constant velocity is what shows the **action** is doing work, since
-neither baseline uses it.
+**The two aggregations disagree about who wins, and both are true.** Global RMSE squares
+before averaging, so it is dominated by the worst samples; the median describes the
+typical one. On identical predictions:
+
+- **constant velocity beats the model on 91% of samples**, and is 4.6× better on the
+  median one;
+- **the model is far better in the tail** — p99 0.083 vs 0.152, worst case 0.129 vs
+  0.226, and on constant velocity's ten worst samples the model is 40% better.
+
+Constant velocity is excellent during smooth motion and fails at direction changes and
+contact — exactly where the action matters and where a planner needs to be right. That
+is an argument for caring about the tail, not a measurement that the model is better;
+the honest summary is that **it trades typical accuracy for tail robustness.**
+
+An earlier revision of this page reported only the global figure, as "+26.2% vs constant
+velocity". That is arithmetically correct and materially misleading on its own.
+
+Across three seeds the global-RMSE gain over constant velocity ranges **+1.2% to +22.6%**
+— on three training episodes that cannot separate a learned dynamics from a lucky init.
 
 ### The failure that produced the design
 
@@ -43,6 +57,40 @@ the action's correction, is what closed it.
 Training loss reaches ~6e-5 against a test RMSE of ~2e-2, and validation error bottoms
 out around epoch 15 and rises after. The model overfits 3 episodes comfortably; early
 stopping is load-bearing, not hygiene.
+
+## Multi-step rollout and uncertainty calibration · MEASURED
+
+319 eight-step windows from the held-out episode. The planner rolls out 8 steps and
+discounts by ensemble spread, so both of those needed checking and neither was implied
+by a one-step number.
+
+| step | model (global) | const-vel (global) | model (median) | const-vel (median) | win rate | spread | rank corr |
+|---|---|---|---|---|---|---|---|
+| 1 | 0.01945 | 0.02694 | 0.00760 | 0.00165 | 9% | 0.01063 | −0.071 |
+| 4 | 0.10084 | 0.15829 | 0.07060 | 0.01514 | 12% | 0.05775 | −0.051 |
+| 8 | 0.27626 | 0.38114 | 0.22405 | 0.05355 | 15% | 0.14977 | −0.120 |
+
+The one-step pattern holds all the way out: the model beats constant velocity at **8/8
+horizons on global RMSE and 0/8 on the median**, winning only 12% of individual
+rollouts. Where it wins, it wins on the hard ones.
+
+### The uncertainty is not calibrated per candidate
+
+**Mean rank correlation between predicted spread and realised error: −0.071.** The
+ensemble disagreement does not predict which rollout will be wrong. The risk term was
+therefore weighting a quantity with no relationship to the thing it stands in for, and
+its default weight is now **zero** — the term is kept because it is correct in principle,
+but a measurement, not an opinion, decides whether it is on.
+
+What the spread *does* track is horizon:
+
+| | step 1 → 8 | growth |
+|---|---|---|
+| realised error (global RMSE) | 0.0195 → 0.2763 | **14.2×** |
+| predicted spread | 0.0106 → 0.1498 | **14.1×** |
+
+So it is a good horizon discount and a useless per-candidate discriminator. Since every
+candidate in a plan shares a horizon, weighting it changed nothing except appearances.
 
 ## Object dynamics · MEASURED, AND NEGATIVE
 

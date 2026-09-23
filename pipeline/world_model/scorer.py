@@ -29,16 +29,23 @@ from pipeline.world_model.latent import SceneLatent
 class ScoreWeights:
     """What the planner is trying to avoid, and how much it cares.
 
-    `risk` multiplies the ensemble's own disagreement, which is what stops a long
-    rollout being trusted as much as a short one. Setting it to zero makes the planner
-    credulous about step 20 — occasionally what you want for debugging, never for
-    execution.
+    `risk` defaults to **zero, on measured grounds**. The ensemble spread was checked
+    against realised rollout error on a held-out episode (`evaluate.py`) and the rank
+    correlation is **-0.071** — it does not predict which rollout will be wrong. What it
+    does track is how error grows with HORIZON, and closely: over 8 steps the realised
+    error grows 14.2x while the spread grows 14.1x. So it is a good horizon discount and
+    a useless per-candidate discriminator, and since every candidate in a plan shares the
+    same horizon, weighting it changes nothing except to look principled.
+
+    Raise it when the dynamics model is good enough for the spread to mean something —
+    the term is correct in principle and the measurement, not the idea, is what zeroed
+    it. `evaluate.py` reports the correlation to check against.
     """
 
     collision: float = 40.0     # per m^3 of predicted interpenetration
     stability: float = 8.0      # per metre an object is left unsupported
     progress: float = 1.0       # per metre of remaining distance to the goal
-    risk: float = 6.0           # per metre of ensemble disagreement
+    risk: float = 0.0           # measured uncorrelated with error; see above
     effort: float = 0.05        # per unit of action magnitude; breaks ties toward calm
 
 

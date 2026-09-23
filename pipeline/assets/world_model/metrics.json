@@ -1,8 +1,8 @@
 {
- "model_robot_rmse": 0.025822525843977928,
+ "model_robot_rmse": 0.019290676340460777,
  "identity_robot_rmse": 0.05539913848042488,
  "constvel_robot_rmse": 0.026147544384002686,
- "model_robot_rmse_cvsubset": 0.025571279227733612,
+ "model_robot_rmse_cvsubset": 0.018907198682427406,
  "split": "3 train / 1 val / 1 test episodes",
  "train_transitions": 1350,
  "test_transitions": 326

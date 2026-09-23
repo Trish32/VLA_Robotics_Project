@@ -29,15 +29,20 @@ too few to distinguish "the model learned the action" from "this seed landed wel
 **What closes it:** more episodes, and reporting a seed distribution rather than a
 single run. Neither is a design question — the training script already takes both.
 
-## 3. Multi-step rollout error is unmeasured
+## 3. Per-candidate uncertainty is not calibrated — MEASURED
 
-Everything reported is **one-step**. The planner rolls out 8 steps, and compounding
-error over that horizon is exactly what the ensemble uncertainty is supposed to stand in
-for — but the relationship between predicted uncertainty and actual N-step error has
-never been checked. If the uncertainty is badly calibrated, the risk term is decorative.
+Closed as an open question, and the answer was the unflattering one. `evaluate.py` rolls
+319 held-out windows 8 steps and compares predicted spread against realised error:
+**rank correlation −0.071.** The spread does not say which rollout will be wrong, so the
+risk term was decorative and its default weight is now zero.
 
-**What closes it:** an N-step held-out evaluation, comparing predicted spread against
-realised error per horizon. Cheap, and it needs no new data — it is the next thing to do.
+It is not useless: the spread tracks error growth across horizons almost exactly (14.1×
+predicted, 14.2× realised over 8 steps). It is a horizon discount, not a candidate
+discriminator, and every candidate in a plan shares a horizon.
+
+**What would close it properly:** a dynamics model good enough for member disagreement to
+mean something — i.e. §1 and §2. Deep ensembles are calibrated when members are fit to
+enough data to disagree *informatively*; four episodes is not that.
 
 ## 4. The value head is unused
 

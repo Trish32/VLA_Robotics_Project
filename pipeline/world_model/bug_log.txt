@@ -97,6 +97,71 @@ Fix:         Score against the pre-action scene: collision and stability now cha
 Metric before/after:  spurious vetoes on the real scene 8/8 -> 0/8.
 
 
+[5] Uncertainty measured only part of the latent, so it was identically zero
+-----------------------------------------------------------------------------
+Date:        2026-09-23
+Fingerprint: every rollout of the trained proprioceptive checkpoint reported an
+             uncertainty of exactly 0.00000 at every horizon, so the planner's risk
+             term contributed nothing and never had.
+
+Cause:       `DynamicsEnsemble.rollout` computed member disagreement over
+             `slots[..., :6]` only. The trained model has NO object slots — a single
+             dummy slot masked off — so `mask.sum()` was 0, the clamp made it 1, and the
+             spread came out 0/1. A quantity measuring part of the latent treats the
+             parts it skips as perfectly known.
+
+Fix:         Combine slot-geometry spread and robot-state spread, averaging over the
+             components that exist, so a scene with no slots is scored on the robot
+             rather than on nothing.
+
+Metric before/after (8-step rollout, held-out episode):
+             reported spread at step 8:  0.00000  ->  0.14977
+
+
+[6] The checkpoint recorded an architecture it could not rebuild
+------------------------------------------------------------------
+Date:        2026-09-23
+Fingerprint: `load_state_dict` failed with a 64x88 vs 64x44 size mismatch on every
+             member when anything tried to reconstruct the model from the checkpoint.
+
+Cause:       `train.py` saved `robot_dim` as the raw state width (44). With velocity
+             carried the latent is [position | velocity] and the model is built with 88.
+             The checkpoint described a model that was never trained.
+
+Fix:         Save the dims the model was BUILT with, plus `integrate_velocity` and the
+             normaliser statistics, and rebuild-and-load the model from the saved dict
+             before writing it. A checkpoint that cannot reconstruct its own model is
+             not a checkpoint, and the check belongs one line from its cause rather than
+             in whatever consumer trips over it later.
+
+
+[7] A headline number that was true and misleading
+-----------------------------------------------------
+Date:        2026-09-23
+Fingerprint: training reported "+26.2% vs constant velocity" while an independent
+             rollout evaluation reported the model LOSING to constant velocity by 37.7%
+             at the same one-step horizon. Two of our own measurements disagreed.
+
+Cause:       Neither was wrong. They aggregate differently and the data makes the
+             choice decisive. Global RMSE squares before averaging and is dominated by
+             the worst samples; mean/median per-sample error describes the typical one.
+             Constant velocity beats the model on 91% of samples and is 4.6x better on
+             the median, while the model is much better in the tail (p99 0.083 vs 0.152;
+             on constant velocity's ten worst samples, 40% better).
+
+             Physically this is what it should look like: constant velocity is excellent
+             during smooth motion and fails at direction changes and contact, which is
+             exactly where the action matters.
+
+Fix:         Report both aggregations plus the win rate, everywhere. The one-line claim
+             was arithmetically correct and gave the opposite impression of the typical
+             case, which is the kind of number that survives review and then fails in
+             use.
+
+Lesson kept: a single aggregate over a skewed error distribution is a choice about
+             which samples matter, not a neutral summary. Say which one, or report both.
+
+
 VERIFICATION STATUS
 ---------------------
 VERIFIED (CPU, tiny inputs, 32 tests):
@@ -113,10 +178,14 @@ MEASURED ON REAL DATA:
     with the seed variance recorded above.
 
 NOT VALIDATED:
+  - per-candidate uncertainty. The ensemble spread tracks how error grows with HORIZON
+    (14.1x predicted against 14.2x realised over 8 steps) but has rank correlation
+    -0.071 against realised per-rollout error, so it cannot say which candidate is
+    riskier. The risk weight defaults to zero because of this.
   - object dynamics. On the only object data available (one episode, one binary mask)
     the model scores 0.35541 against an identity baseline of 0.35029 — worse than
     assuming the object does not move. The object pathway is architecture, not a
     result, and nothing downstream should treat its predictions as informative.
-  - multi-step rollout error. Every number here is one-step; the planner rolls out 8.
-    The ensemble uncertainty is a stand-in for compounding error that has never been
-    checked against realised error.
+  - (closed) multi-step rollout error is now measured over 8 steps on 319 held-out
+    windows; see RESULTS.md. The model beats constant velocity at 8/8 horizons on global
+    RMSE and 0/8 on the median sample.
