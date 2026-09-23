@@ -50,6 +50,7 @@ RGB-D ──▶ ORB-SLAM3 / DROID-SLAM ──▶ TSDF fusion ──▶ OpenMask3
 | pose | FoundationPose | runs on a T4; **175.63° rotation error** vs our map — **gated out**, see below |
 | ground | scene graph → target | 5 nodes, 3 relations from instance geometry; `resolve("the chair")` → **`chair_4`** |
 | act | GR00T N1.6-3B | **16 steps × 29 DoF**, 3.1 s CPU |
+| **simulate** | [action-conditioned world model](world_model/) | K candidates × N-step rollout, scored before execution; dynamics beats both baselines on proprio, **not** on objects |
 
 **→ [Full numbers, ablations and what is *not* established](../RESULTS.md)**
 
@@ -85,6 +86,13 @@ rotation — a segmentation mask carries no orientation, and
 `observations.from_openmask3d` refuses to invent one rather than hand a planner an
 authoritative-looking wrong pose. A stage that admitted the pose anyway would be strictly
 worse than one that has no pose at all.
+
+**Actions are simulated before they are executed.** Stage 6.5 turns GR00T's chunk into
+K candidates, rolls each through a learned latent dynamics model, and scores the predicted
+futures for induced collision, support violation and ensemble uncertainty. The dynamics
+beats identity (0.0554) and constant velocity (0.0262) on held-out robot proprioception
+at **0.0202–0.0258** — but is *worse than identity* on object motion, so the object slots
+roll forward near-static and [world_model/](world_model/) leads with that.
 
 **Extents are taken after outlier rejection.** An extent is a maximum over points, so a
 single stray sets it — and it becomes both the TF2 box and the support function the

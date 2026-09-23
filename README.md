@@ -31,6 +31,11 @@ RGB-D ──▶ ORB-SLAM3 / DROID-SLAM ──▶ TSDF fusion ──▶ OpenMask3
                                                      scene graph ◀── 6-DoF pose
                                                             │
                                               ROS2 / TF2 ───┴──▶ GR00T N1.6 / DexVLA
+                                                            │              │
+                                                            ▼              ▼
+                                        action-conditioned world model ◀── K candidates
+                                                            │
+                                                  simulate N steps, score, execute one
 ```
 
 | stage | measured |
@@ -39,7 +44,8 @@ RGB-D ──▶ ORB-SLAM3 / DROID-SLAM ──▶ TSDF fusion ──▶ OpenMask3
 | **localize, dynamic** — + YOLOv8n/ByteTrack | **ATE 80.92 → 18.70 cm (−76.9%)** |
 | **segment** — Mask3D + SAM + CLIP | checkpoint **0/0/0**, via a pure-PyTorch sparse conv verified at **1e-10** |
 | **pose** — FoundationPose | `register()` + tracking on a T4; **2.08 cm** self-consistency, but **175.63° rotation error** vs our map — gated out, not claimed |
-| **act** — GR00T N1.6-3B | **16 steps × 29 DoF**, 4.4 s CPU |
+| **act** — GR00T N1.6-3B | **16 steps × 29 DoF**, 3.1 s CPU |
+| **simulate** — action-conditioned world model | dynamics beats identity (0.0554) and constant velocity (0.0262) at **0.0202–0.0258** on held-out proprio; **not** validated on objects |
 
 **→ [The stack, the demo, and the honest limit](pipeline/)**
 **→ [RESULTS.md](RESULTS.md)** — every measurement, labelled MEASURED / EXACT / MODELLED

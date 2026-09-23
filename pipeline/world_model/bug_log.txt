@@ -1,0 +1,122 @@
+Action-conditioned world model — bug log
+=========================================
+Scope: latent dynamics z_{t+1} = f(z_t, a_t) over object slots + robot state, and the
+candidate-action scoring loop built on it. Our own code, not an adaptation, so the
+Fidelity Rule's checkpoint test does not apply — the equivalent bar is that the learned
+model must beat the trivial predictors on held-out data, or it is not carried.
+
+
+[1] The model could not represent the baseline it was being asked to beat
+--------------------------------------------------------------------------
+Date:        2026-09-23
+Fingerprint: held-out RMSE on gr1.PickNPlace — constant velocity 0.02717, learned model
+             0.05900. The model lost to a predictor that ignores the action entirely,
+             and lost to identity too once early stopping was added.
+
+Cause:       `z` carried position only. Constant-velocity motion is a function of the
+             PREVIOUS state, which the latent did not contain, so no amount of training
+             could express it. The model was being scored against a hypothesis it was
+             structurally blind to.
+
+Partial fix that did NOT work: adding velocity to the latent ([pos | vel], robot 44d ->
+             88d). Held-out 0.05795 — still worse than identity. The model now had the
+             information but was initialised at the IDENTITY, so it had to learn its way
+             to constant velocity before learning anything about the action, and on
+             1,760 samples from 4 episodes it spent its whole budget doing that.
+
+Fix:         `integrate_velocity` — the base prediction carries velocity into position,
+             so the UNTRAINED model is exactly the constant-velocity predictor and the
+             learned term only supplies the action's correction. Same principle as the
+             motion gate one level up: start at the strongest known predictor.
+
+Metric before/after (held-out test episode, 3 train / 1 val / 1 test):
+             identity          0.05540
+             constant velocity 0.02615
+             model, before     0.05900   (worse than both)
+             model, after      0.0202-0.0258 across 3 seeds
+
+Caveat kept: the margin over constant velocity ranges +1.2% to +22.6% by seed. Three
+             training episodes cannot distinguish a learned dynamics from a lucky init,
+             and RESULTS.md reports the range rather than the best run.
+
+
+[2] Early stopping was selecting on the reported test set
+-----------------------------------------------------------
+Date:        2026-09-23
+Fingerprint: validation error bottomed at epoch 15 and rose after, so the best epoch was
+             being restored — using the same episode the final number was reported on.
+
+Cause:       A two-way split. The "held-out" episode was doing double duty as model
+             selection and as the measurement, which makes the reported figure an
+             optimistic bound, not a measurement.
+
+Fix:         Three-way split by episode: 3 train / 1 validation / 1 test. The epoch is
+             chosen on validation; the test episode is touched once, at the end.
+
+
+[3] The symmetry-breaking that destroyed the identity initialisation
+----------------------------------------------------------------------
+Date:        2026-09-23
+Fingerprint: the training script printed "model 0.07870 vs identity 0.06372 (equal by
+             construction)". They were not equal, and the claim in the message was the
+             thing that was wrong.
+
+Cause:       `DynamicsEnsemble` perturbs member parameters at init so the members are
+             not identical — without that, they agree about everything and the
+             uncertainty signal is dead. The perturbation was applied to EVERY 2-D
+             parameter including the output heads, whose zero initialisation is what
+             makes the model start at the identity. Two deliberate properties, one
+             silently cancelling the other.
+
+Fix:         Perturb the trunk only; `slot_out`, `slot_gate` and `robot_out` stay
+             exactly zero. Members still differ, and every member still starts by
+             predicting "nothing changes". Verified: max |dz| = 0.00e+00 at init while
+             member parameters differ.
+
+Note:        an untrained ensemble now reports zero spread, which is correct — members
+             that all predict no change genuinely agree. The earlier growing-uncertainty
+             smoke test had been reading head noise as epistemic uncertainty.
+
+
+[4] Collision cost that could not discriminate between candidates
+-------------------------------------------------------------------
+Date:        2026-09-23
+Fingerprint: stage 6.5 on the real scene vetoed all 8 candidates, each with an identical
+             collision cost of 0.2400.
+
+Cause:       The term scored ABSOLUTE predicted interpenetration. Mask3D's proposals on
+             this scene already overlap — measured separately, all 15 instance pairs
+             have overlapping boxes — so every candidate inherited the same pre-existing
+             overlap and the term carried no information about any action. A planner
+             choosing among actions cannot be charged for what is common to all of them.
+
+Fix:         Score against the pre-action scene: collision and stability now charge only
+             the INDUCED part, clamped at zero so a predicted improvement earns no bonus
+             from a dynamics model this weak.
+
+Metric before/after:  spurious vetoes on the real scene 8/8 -> 0/8.
+
+
+VERIFICATION STATUS
+---------------------
+VERIFIED (CPU, tiny inputs, 32 tests):
+  - untrained model is exactly the identity, and exactly constant-velocity with
+    `integrate_velocity`;
+  - padded slots never influence a prediction or a score, and padding does not change
+    the prediction for real slots;
+  - ensemble uncertainty grows with rollout horizon;
+  - collision and support terms match hand-computed values (0.5 m^3, 1.95 m);
+  - the planner vetoes an action-induced collision and ignores pre-existing overlap.
+
+MEASURED ON REAL DATA:
+  - proprioceptive dynamics beats identity and constant velocity on a held-out episode,
+    with the seed variance recorded above.
+
+NOT VALIDATED:
+  - object dynamics. On the only object data available (one episode, one binary mask)
+    the model scores 0.35541 against an identity baseline of 0.35029 — worse than
+    assuming the object does not move. The object pathway is architecture, not a
+    result, and nothing downstream should treat its predictions as informative.
+  - multi-step rollout error. Every number here is one-step; the planner rolls out 8.
+    The ensemble uncertainty is a stand-in for compounding error that has never been
+    checked against realised error.
