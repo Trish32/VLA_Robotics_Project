@@ -19,12 +19,12 @@ six separate pictures would misrepresent it:
 |---|---|
 | RGB + depth | the raw stream everything below is derived from |
 | **3-D world model** (orbiting) | the cloud accumulating under a flying camera frustum, then instance-coloured points, then the target's box |
-| points-fused sparkline | fusion progress over 103 frames, 0 → 133,928 fused points |
-| scene graph | instances resolving with kind and CLIP similarity, then the spatial relations |
-| prompt to policy | the exact string stage 5 serialises and stage 6 consumes |
+| points sparkline | accumulation over 103 frames, 0 → 218,942 unprojected points (these condense into the 133,928-point TSDF cloud) |
+| instances + relations | instances resolving with their CLIP similarity, then the spatial relations |
+| **stage-4 gate** | the four pose checks appearing one at a time, then the verdict — currently **POSE REFUSED** |
 | GR00T chunk | 16 × 29 DoF, with the execution cursor advancing at 30 Hz |
 
-The stage banner tracks 1–2 → 3–4 → 5 → 6 as the run progresses. The 3-D view orbits
+The stage banner tracks 1–2 → 3 → 4 → 5 → 6 as the run progresses. The 3-D view orbits
 continuously, which is what makes a point cloud readable as geometry rather than a smear,
 and it is drawn at true room proportions (4.90 × 3.71 × 1.56 m) rather than a cube.
 
@@ -143,8 +143,12 @@ environments, and two OpenMP runtimes in one process abort.
 conda run -n foundationpose_vl python pipeline/tools/e2e_tum.py
 # stage 3     Mask3D proposals
 conda run -n openmask3d_vl    python pipeline/tools/e2e_segment.py
-# stage 4     SAM + CLIP open-vocabulary labels
+# stage 3.5   SAM + CLIP open-vocabulary labels
 conda run -n openmask3d_vl    python pipeline/tools/e2e_label.py
+# stage 4     6-DoF pose, gated. Needs a CUDA box for the pose itself:
+#             build_pose_bundle.py -> foundationpose_6dof/.kaggle/fp.py -> pose_result.json
+conda run -n foundationpose_vl python pipeline/tools/build_pose_bundle.py
+conda run -n foundationpose_vl python pipeline/tools/e2e_pose.py
 # stage 5     scene graph, relations, grounding
 conda run -n foundationpose_vl python pipeline/tools/e2e_ground.py --query "the monitor"
 # stage 6     GR00T, driven by the graph's own prompt

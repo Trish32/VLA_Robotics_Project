@@ -167,7 +167,8 @@ def main() -> int:
     }, open(OUT / "ground.json", "w"), indent=1)
 
     print(f"\n           -> ground.json")
-    print("[next  ]  stage 6: conda run -n groot_vl python pipeline/tools/e2e_policy.py")
+    print("[next  ]  stage 6: PYTHONPATH=grootN1_Robotics/upstream:. conda run -n groot_vl "
+          "python grootN1_Robotics/tools/run_policy_cpu.py  (see pipeline/README.md)")
     return 0
 
 

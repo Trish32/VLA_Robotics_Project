@@ -47,6 +47,9 @@ SEQ = None
 PALETTE = ["#0f766e", "#b45309", "#7c3aed", "#be123c", "#0369a1", "#4d7c0f"]
 INK, MUTED, PANEL, GRID = "#10151c", "#5b6874", "#f2f5f8", "#dde4ea"
 LIVE, TRACK = "#94a3b2", "#be123c"
+# Stage 4 draws a REFUSED result, so it gets its own colour rather than borrowing
+# the target's -- a reader should not have to read the caption to tell them apart.
+BAD = "#c2410c"
 
 
 def unproject(depth, T, stride=7, far=4.0):
@@ -145,6 +148,10 @@ def main() -> int:
     labelled = json.load(open(E2E / "labelled.json"))["instances"]
     ground = json.load(open(E2E / "ground.json"))
     policy = json.load(open(E2E / "policy.json"))
+    # Stage 4 is optional: the chain still runs without a pose result, and the demo says
+    # so rather than silently dropping a stage.
+    pose_path = E2E / "pose.json"
+    pose = json.load(open(pose_path)) if pose_path.exists() else None
     chunk = {k: np.asarray(v) for k, v in policy.get("values", {}).items()}
 
     NS = 1_000_000_000
@@ -203,12 +210,13 @@ def main() -> int:
             chosen.append((t, rel, traj[j][1]))
     n_fly = len(chosen)
     n_seg = 5 * len(order) + 6           # instances resolving, then a hold
+    n_pose = 26 if pose else 0           # stage 4: the pose, and the gate's verdict
     n_gnd = 22                           # grounding
     n_act = 3 * (len(next(iter(chunk.values()))) if chunk else 0) + 6
-    total = n_fly + n_seg + n_gnd + n_act
+    total = n_fly + n_seg + n_pose + n_gnd + n_act
     horizon = len(next(iter(chunk.values()))) if chunk else 0
-    print(f"[render]  {total} frames = {n_fly} fly + {n_seg} segment + {n_gnd} ground "
-          f"+ {n_act} act", flush=True)
+    print(f"[render]  {total} frames = {n_fly} fly + {n_seg} segment + {n_pose} pose "
+          f"+ {n_gnd} ground + {n_act} act", flush=True)
 
     accumulated, track, metrics = [], [], []
     rgb_img = depth_img = None
@@ -222,7 +230,8 @@ def main() -> int:
     for f in range(total):
         phase = ("fly" if f < n_fly else
                  "segment" if f < n_fly + n_seg else
-                 "ground" if f < n_fly + n_seg + n_gnd else "act")
+                 "pose" if f < n_fly + n_seg + n_pose else
+                 "ground" if f < n_fly + n_seg + n_pose + n_gnd else "act")
 
         if phase == "fly":
             t, rel, T = chosen[f]
@@ -240,7 +249,10 @@ def main() -> int:
 
         shown = (order[: min(len(order), (f - n_fly) // 5 + 1)]
                  if phase == "segment" else order if phase != "fly" else [])
-        step = (f - n_fly - n_seg - n_gnd) // 3 if phase == "act" else 0
+        step = (f - n_fly - n_seg - n_pose - n_gnd) // 3 if phase == "act" else 0
+        # How far through the pose stage we are, so the checks appear one at a time
+        # instead of all at once -- each one is a separate claim.
+        pose_k = (f - n_fly - n_seg) if phase == "pose" else 0
 
         fig = plt.figure(figsize=(12.8, 7.2), dpi=100)
         fig.patch.set_facecolor("#ffffff")
@@ -250,8 +262,9 @@ def main() -> int:
                  weight="bold", color=INK, family="monospace")
         fig.text(0.012, 0.932, f"TUM {scene_name}  ·  dynamic scene",
                  fontsize=9, color=MUTED, family="monospace")
-        stage_of = {"fly": "1–2  localize + fuse", "segment": "3–4  segment + label",
-                    "ground": "5  scene graph", "act": "6  action chunk"}
+        stage_of = {"fly": "1–2  localize + fuse", "segment": "3  segment + label",
+                    "pose": "4  6-DoF pose", "ground": "5  scene graph",
+                    "act": "6  action chunk"}
         fig.text(0.70, 0.963, f"STAGE {stage_of[phase]}", fontsize=11, weight="bold",
                  color=PALETTE[0], family="monospace")
         fig.text(0.70, 0.932, "ORB-SLAM3 · Mask3D · CLIP · graph · GR00T",
@@ -278,7 +291,11 @@ def main() -> int:
         ax.set_xlim(0, max(1, n_fly)); ax.set_ylim(0, max(metrics or [1]) * 1.15)
         ax.set_facecolor(PANEL); ax.set_xticks([]); ax.set_yticks([])
         ax.grid(alpha=0.25, color=GRID)
-        ax.set_title(f"points fused   {metrics[-1] if metrics else 0:,}",
+        # "unprojected", not "fused": this counts raw points pushed out of each depth
+        # image, which is what the animation is actually showing accumulate. The TSDF
+        # cloud those condense into is smaller (133,928 here), and labelling this
+        # "fused" quietly claimed the wrong number.
+        ax.set_title(f"points unprojected   {metrics[-1] if metrics else 0:,}",
                      fontsize=8.5, color=MUTED)
 
         # ------------------------------------------------- centre: 3-D scene
@@ -306,8 +323,28 @@ def main() -> int:
         for seg in frustum(cam_T):
             ax.plot(seg[:, 0], seg[:, 1], seg[:, 2], lw=1.0, color=TRACK, alpha=0.85)
 
+        # Stage 4: draw FoundationPose's answer next to where our map puts the object.
+        # The disagreement is the result, so it should be visible rather than asserted
+        # in a caption -- a reader can see 57 cm and a flipped frame at a glance.
+        if phase == "pose" and pose and pose.get("rejected_pose_world"):
+            Tp = np.asarray(pose["rejected_pose_world"], float)
+            fp, mp_ = Tp[:3, 3], np.asarray(nodes[target].centre, float)
+            ax.plot([fp[0], mp_[0]], [fp[1], mp_[1]], [fp[2], mp_[2]],
+                    lw=1.4, color=BAD, ls="--", alpha=0.95)
+            ax.scatter(*fp[:, None], s=70, color=BAD, marker="X", depthshade=False,
+                       zorder=6)
+            # The estimated frame's axes, which is where the 175 deg shows up: a flipped
+            # pose draws its axes pointing the wrong way, and no number is needed.
+            for d, col in enumerate((BAD, "#d98d3a", "#9a6fb0")):
+                a = Tp[:3, d] * 0.30
+                ax.plot([fp[0], fp[0] + a[0]], [fp[1], fp[1] + a[1]],
+                        [fp[2], fp[2] + a[2]], lw=1.8, color=col, alpha=0.95)
+            # No 3-D text here: matplotlib does not collide-check it, and at this
+            # camera distance "FoundationPose" landed on top of the target's own label.
+            # The marker is keyed in the legend instead, where it can be read.
+
         # Only the TARGET gets a wireframe. It is the one box a planner acts on.
-        if phase in ("ground", "act") or target in shown:
+        if phase in ("pose", "ground", "act") or target in shown:
             tnode = nodes[target]
             tlo, thi = tnode.aabb()
             for seg in box_edges(tlo, thi):
@@ -344,7 +381,7 @@ def main() -> int:
                  family="monospace")
         y -= 0.040
         for ident in shown:
-            mark = "→" if ident == target and phase in ("ground", "act") else "■"
+            mark = "→" if ident == target and phase in ("pose", "ground", "act") else "■"
             fig.text(0.70, y, f"{mark} {ident}", fontsize=9, family="monospace",
                      color=colour_of[ident])
             y -= 0.032
@@ -358,6 +395,44 @@ def main() -> int:
                 fig.text(0.695, y - 0.077, f"+{len(relations) - 1} more relation"
                          f"{'s' if len(relations) > 2 else ''}", fontsize=8.5,
                          color=MUTED, family="monospace")
+
+        # ------------------------------------------------- stage 4: the gate
+        # Revealed one line at a time. Each is an independent reason, and showing them
+        # together would read as one verdict instead of four agreeing ones.
+        if phase == "pose" and pose:
+            rows = [
+                (f"translation  {pose['median_translation_cm']:6.1f} cm",
+                 pose["median_translation_cm"] <= pose["thresholds"]["translation_cm"]),
+                (f"rotation     {pose['median_rotation_deg']:6.1f}°",
+                 pose["median_rotation_deg"] <= pose["thresholds"]["rotation_deg"]),
+                (f"depth        {abs(pose['per_frame'][0]['behind_surface_cm']):6.1f} cm"
+                 " behind", not any("behind" in r for r in pose["per_frame"][0]["reasons"])),
+                (f"convergence  {pose.get('agreement', {}).get('clustered_within_15deg', 0)}"
+                 f"/{pose.get('agreement', {}).get('k', 0)} agree",
+                 bool(pose.get("agreement_ok"))),
+            ]
+            fig.text(0.695, y - 0.055, "STAGE 4 GATE", fontsize=9, weight="bold",
+                     color=INK, family="monospace")
+            if pose.get("rejected_pose_world"):
+                gap = np.linalg.norm(np.asarray(pose["rejected_pose_world"], float)[:3, 3]
+                                     - np.asarray(nodes[target].centre, float)) * 100
+                fig.text(0.70, y - 0.088, f"✕ FoundationPose — {gap:.0f} cm off",
+                         fontsize=8.5, family="monospace", color=BAD)
+            yy = y - 0.126
+            for n, (text, ok) in enumerate(rows):
+                if pose_k < 4 + n * 4:
+                    break
+                fig.text(0.70, yy, f"{'PASS' if ok else 'FAIL'}  {text}", fontsize=8.5,
+                         family="monospace", color=(PALETTE[0] if ok else BAD))
+                yy -= 0.030
+            if pose_k >= 19:
+                verdict = "POSE ADMITTED" if pose["accepted"] else "POSE REFUSED"
+                fig.text(0.695, yy - 0.020, verdict, fontsize=10.5, weight="bold",
+                         family="monospace", color=(PALETTE[0] if pose["accepted"] else BAD))
+                fig.text(0.695, yy - 0.050,
+                         "position-only pose stands" if not pose["accepted"] else
+                         "6-DoF pose enters the graph",
+                         fontsize=8.5, family="monospace", color=MUTED)
 
         # ------------------------------------------------ bottom: action chunk
         for n, (group, arr) in enumerate(chunk.items()):
@@ -379,9 +454,17 @@ def main() -> int:
                      f"{sum(a.shape[1] for a in chunk.values())} DoF")
             fig.text(0.695, 0.268, label, fontsize=8.5, color=MUTED, family="monospace")
 
-        fig.text(0.012, 0.035,
-                 "6-DoF refinement not run here — box is an axis-aligned extent",
-                 fontsize=8, color=MUTED, family="monospace")
+        # The footnote used to say 6-DoF refinement "was not run here". It has been run
+        # since, and refused -- which is a different and more useful statement.
+        if pose and not pose["accepted"]:
+            note = (f"6-DoF pose measured and REFUSED "
+                    f"({pose['median_rotation_deg']:.0f}° off) — box is the "
+                    f"axis-aligned extent, rotation deliberately unclaimed")
+        elif pose:
+            note = "6-DoF pose admitted by the stage-4 gate"
+        else:
+            note = "6-DoF refinement not run here — box is an axis-aligned extent"
+        fig.text(0.012, 0.035, note, fontsize=8, color=MUTED, family="monospace")
         save(fig)
         if frame_no % 25 == 0:
             print(f"[render]  {frame_no}/{total}", flush=True)
@@ -404,7 +487,9 @@ def main() -> int:
                     str(palette), "-lavfi", f"{vf}[x];[x][1:v]paletteuse=dither=none",
                     str(gif)], check=True)
 
-    shutil.copy(tmp / f"{n_fly + n_seg + n_gnd - 3:05d}.png", still)
+    still_at = (n_fly + n_seg + n_pose - 2 if n_pose
+                else n_fly + n_seg + n_gnd - 3)
+    shutil.copy(tmp / f"{still_at:05d}.png", still)
     shutil.rmtree(tmp, ignore_errors=True)
 
     for path in (gif, mp4, still):

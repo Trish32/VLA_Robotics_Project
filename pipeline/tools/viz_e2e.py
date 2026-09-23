@@ -18,7 +18,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 OUT = ROOT / "pipeline/assets/e2e"
-SEQ = ROOT / "orbslam3_baseline/data/rgbd_dataset_freiburg1_xyz"
+DATA = ROOT / "orbslam3_baseline/data"
+# SEQ and the estimated trajectory both come from fuse.json — see main(). They used to
+# be hardcoded to freiburg1_xyz, which put that sequence's 1.03 cm ATE on the same page
+# as a different sequence's cloud.
 
 # Colour-blind-safe, and deliberately not a rainbow: instances are categorical.
 PALETTE = ["#0f766e", "#b45309", "#7c3aed", "#be123c", "#0369a1", "#4d7c0f"]
@@ -51,9 +54,15 @@ def main() -> int:
     plt.rcParams.update({"font.size": 8, "axes.titlesize": 9,
                          "axes.edgecolor": "#94a3b8"})
 
+    # The run's own manifest decides the sequence and the cloud, so this page follows
+    # whatever was last fused instead of a filename baked in when fr1/xyz was current.
+    fuse = json.load(open(OUT / "fuse.json"))
+    seq = DATA / fuse["sequence"]
+    scene = fuse["sequence"].replace("rgbd_dataset_", "")
+
     # ---------------------------------------------------------- 1. trajectory
-    est_t, est = read_tum(ROOT / "orbslam3_baseline/data/trajectory_orbslam3.txt")
-    gt_t, gt = read_tum(SEQ / "groundtruth.txt")
+    est_t, est = read_tum(DATA / fuse["trajectory"])
+    gt_t, gt = read_tum(seq / "groundtruth.txt")
     pairs = [(i, int(np.argmin(np.abs(gt_t - t)))) for i, t in enumerate(est_t)
              if abs(gt_t[np.argmin(np.abs(gt_t - t))] - t) <= 0.02]
     src = est[[i for i, _ in pairs]]
@@ -74,15 +83,24 @@ def main() -> int:
     ax.plot(est_t[[i for i, _ in pairs]] - est_t[0], errors, lw=0.9, color="#0f766e")
     ax.axhline(np.sqrt((errors**2).mean()), ls="--", lw=1, color="#be123c",
                label=f"RMSE {np.sqrt((errors**2).mean()):.2f} cm")
-    ax.set_title("1 · per-frame error"); ax.set_xlabel("time (s)")
+    ax.set_title(f"1 · per-frame error — {scene}"); ax.set_xlabel("time (s)")
     ax.set_ylabel("error (cm)"); ax.legend(); ax.grid(alpha=0.25)
 
     # ------------------------------------------------------ 2/3. cloud + labels
-    cloud = o3d.io.read_point_cloud(str(OUT / "tum_fr1_xyz.ply"))
+    # Follow fuse.json rather than a hardcoded filename. This used to load
+    # `tum_fr1_xyz.ply` while the masks came from whatever run was current, which on a
+    # different sequence is not a wrong picture but an IndexError -- 133,928 mask bits
+    # indexed into a 70,236-point cloud.
+    cloud = o3d.io.read_point_cloud(fuse["ply"])
     pts = np.asarray(cloud.points)
     cols = np.asarray(cloud.colors)
     masks = np.load(OUT / "instance_masks.npz")["masks"]
     labelled = json.load(open(OUT / "labelled.json"))["instances"]
+    if masks.shape[1] != len(pts):
+        raise SystemExit(
+            f"masks index {masks.shape[1]} points, cloud has {len(pts)} — these are "
+            "from different runs. Re-run e2e_segment.py against the current fuse.json."
+        )
 
     ax = axes[2]
     step = max(1, len(pts) // 25000)
@@ -116,6 +134,65 @@ def main() -> int:
     fig.tight_layout()
     fig.savefig(OUT / "e2e_stage3.png", bbox_inches="tight")
     plt.close(fig)
+
+    # --------------------------------------------------------------- 4. 6-DoF pose
+    # This page's contract is "if a stage did not produce something, its panel says so".
+    # Stage 4 DID produce something — a pose, and a refusal — so it gets a panel that
+    # shows the four checks rather than being omitted for having failed.
+    pose_path = OUT / "pose.json"
+    if pose_path.exists():
+        pose = json.load(open(pose_path))
+        per = pose["per_frame"]
+        fig, (axL, axR) = plt.subplots(1, 2, figsize=(9.4, 3.2), dpi=170,
+                                       gridspec_kw={"width_ratios": [1.45, 1]})
+        frames = [c["frame"] for c in per]
+        axL.plot(frames, [c["translation_cm"] for c in per], "o-", lw=1.4, ms=4,
+                 color="#c2410c", label="translation (cm)")
+        axL.axhline(pose["thresholds"]["translation_cm"], ls="--", lw=1.0,
+                    color="#0f766e", label="gate threshold")
+        ax2 = axL.twinx()
+        ax2.plot(frames, [c["rotation_deg"] for c in per], "s-", lw=1.4, ms=3.5,
+                 color="#7c3aed", label="rotation (deg)")
+        # Fixed 0-180 scale. Autoscaled, a 0.7 deg wobble filled the axis and read as a
+        # wildly unstable rotation; the truth is the opposite -- it is pinned near 176,
+        # i.e. consistently flipped. The scale has to carry that.
+        ax2.set_ylim(0, 180)
+        ax2.set_yticks([0, 45, 90, 135, 180])
+        ax2.axhline(180, ls=":", lw=0.9, color="#7c3aed", alpha=0.5)
+        ax2.set_ylabel("rotation error (deg)  —  180 = flipped", color="#7c3aed")
+        axL.set_xlabel("bundle frame"); axL.set_ylabel("translation error (cm)",
+                                                       color="#c2410c")
+        axL.grid(alpha=0.25); axL.set_facecolor("#f8fafc")
+        axL.set_title(f"per-frame agreement with the map "
+                      f"({pose['frames_corroborating']}/{pose['frames_total']} pass)")
+        axL.legend(loc="center left", fontsize=7.5)
+
+        ag = pose.get("agreement") or {}
+        rows = [
+            ("translation", f"{pose['median_translation_cm']:.1f} cm",
+             pose["median_translation_cm"] <= pose["thresholds"]["translation_cm"]),
+            ("rotation", f"{pose['median_rotation_deg']:.1f} deg",
+             pose["median_rotation_deg"] <= pose["thresholds"]["rotation_deg"]),
+            ("depth", f"{per[0]['behind_surface_cm']:.1f} cm behind",
+             not any("behind" in r for r in per[0]["reasons"])),
+            ("convergence", f"{ag.get('clustered_within_15deg','?')}/"
+             f"{ag.get('k','?')} within 15 deg", bool(pose.get("agreement_ok"))),
+        ]
+        axR.axis("off")
+        axR.text(0.0, 0.93, "STAGE 4 GATE", fontsize=10, weight="bold",
+                 family="monospace")
+        for n, (name, val, ok) in enumerate(rows):
+            axR.text(0.0, 0.74 - n * 0.145,
+                     f"{'PASS' if ok else 'FAIL'}  {name:<12}{val}",
+                     fontsize=9, family="monospace",
+                     color=("#0f766e" if ok else "#c2410c"))
+        verdict = "POSE ADMITTED" if pose["accepted"] else "POSE REFUSED"
+        axR.text(0.0, 0.10, verdict, fontsize=12, weight="bold", family="monospace",
+                 color=("#0f766e" if pose["accepted"] else "#c2410c"))
+        fig.suptitle("4 · FoundationPose — measured, then gated", y=1.03)
+        fig.tight_layout()
+        fig.savefig(OUT / "e2e_stage4.png", bbox_inches="tight")
+        plt.close(fig)
 
     # ------------------------------------------------------------- 6. action chunk
     policy = json.load(open(OUT / "policy.json"))
@@ -154,6 +231,11 @@ def main() -> int:
                else policy["width"],
         "policy_seconds": policy["seconds"],
     }
+    if pose_path.exists():
+        _p = json.load(open(pose_path))
+        summary["pose_accepted"] = bool(_p["accepted"])
+        summary["pose_translation_cm"] = round(_p["median_translation_cm"], 2)
+        summary["pose_rotation_deg"] = round(_p["median_rotation_deg"], 2)
     (OUT / "e2e_summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
     return 0

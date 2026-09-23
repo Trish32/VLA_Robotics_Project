@@ -11,9 +11,15 @@ Here every stage occupies real time on a single `wall` clock in nanoseconds:
     stage 1-2   over the sequence's own 26 s. The camera moves, and the cloud GROWS —
                 each frame's depth is unprojected and accumulated, so the map assembles
                 the way fusion actually assembles it.
-    stage 3-5   after the sequence, at their measured durations. Instances appear, then
-                labels attach to them, then the graph resolves a target.
+    stage 3-5   after the sequence, at their measured durations. Instances appear,
+                labels attach to them, FoundationPose's pose is drawn against the
+                gate's verdict, then the graph resolves a target.
     stage 6     the action chunk, laid out at the 30 Hz a controller would execute it.
+
+Stage 4 is included even though its answer is currently "refuse". A replay that dropped
+a stage because it failed would show a stack that is one stage shorter and one claim
+stronger than the real one; the gap between FoundationPose's pose and the instance our
+map holds is drawn, because that gap is the result.
 
 `world/stage` carries the active stage as text, so scrubbing tells you what the system
 was doing, not just what it had.
@@ -49,7 +55,11 @@ PALETTE = [(15, 118, 110), (180, 83, 9), (124, 58, 237),
            (190, 18, 60), (3, 105, 161), (77, 124, 15)]
 
 # Measured durations, so the replay's later stages take as long as they really took.
-STAGE_SECONDS = {"segment": 34.0, "label": 210.0, "graph": 0.2, "policy": 3.0}
+# "pose" is a T4 measurement (register + an 8-frame track), not a local one — the
+# stage cannot run on this machine at all. Kept in the same units so the timeline
+# stays honest about which stage costs what.
+STAGE_SECONDS = {"segment": 34.0, "label": 210.0, "pose": 12.0, "graph": 0.2,
+                 "policy": 3.0}
 
 
 def read_trajectory(path: Path):
@@ -181,7 +191,7 @@ def main() -> int:
         rr.log(f"world/proposal/{r['id']}",
                rr.Points3D(points[masks[i]], colors=(120, 130, 145), radii=0.007))
 
-    # ============================================ stage 4: labels + association
+    # ========================================== stage 3.5: labels + association
     registry = InstanceRegistry()
     grouped: dict[str, list] = {}
     for i, r in enumerate(labelled):
@@ -197,7 +207,7 @@ def main() -> int:
         colour = PALETTE[n % len(PALETTE)]
         tracked = registry.tracked[instance_id]
         note = "" if len(members) == 1 else f" [{len(members)} proposals merged]"
-        stage(f"STAGE 4 · SAM+CLIP -> {instance_id}{note}")
+        stage(f"STAGE 3.5 · SAM+CLIP -> {instance_id}{note}")
 
         # Retire the grey proposals this instance absorbed, so the merge is visible
         # rather than leaving two overlapping renderings of one desk.
@@ -212,8 +222,46 @@ def main() -> int:
             labels=[f"{instance_id} ({members[0][1]['similarity']:.2f}){note}"]))
 
     merged = sum(len(m) - 1 for m in grouped.values())
-    print(f"[replay]  stages 3-4: {len(labelled)} proposals -> {len(grouped)} instances "
+    print(f"[replay]  stage 3: {len(labelled)} proposals -> {len(grouped)} instances "
           f"({merged} merged)")
+
+    # ==================================================== stage 4: the 6-DoF pose
+    # The stage that refuses. Drawing the rejected pose next to the instance our map
+    # holds is the point: the gap IS the result, and a replay that skipped a stage
+    # because its answer was "no" would misrepresent what the stack does.
+    pose_path = OUT / "pose.json"
+    if pose_path.exists():
+        pose = json.load(open(pose_path))
+        cursor = Stamp(cursor.ns + int(STAGE_SECONDS["pose"] * NS_PER_S))
+        at(cursor)
+        verdict = "ADMITTED" if pose["accepted"] else "REFUSED"
+        stage(f"STAGE 4 · FoundationPose -> {verdict}")
+        Tp = pose.get("pose_world") or pose.get("rejected_pose_world")
+        if Tp is not None:
+            Tp = np.asarray(Tp, float)
+            colour = [0x0f, 0x76, 0x6e] if pose["accepted"] else [0xc2, 0x41, 0x0c]
+            rr.log("world/pose/foundationpose", rr.Transform3D(
+                translation=Tp[:3, 3], mat3x3=Tp[:3, :3], axis_length=0.3))
+            rr.log("world/pose/marker", rr.Points3D(
+                [Tp[:3, 3]], colors=[colour], radii=0.045,
+                labels=[f"FoundationPose ({verdict})"]))
+            tgt = registry.tracked[pose["target"]].centre
+            rr.log("world/pose/disagreement", rr.LineStrips3D(
+                [[Tp[:3, 3], tgt]], colors=[colour], radii=0.004,
+                labels=[f"{np.linalg.norm(Tp[:3, 3] - tgt) * 100:.0f} cm"]))
+        rr.log("world/pose/gate", rr.TextDocument(
+            "\n".join([
+                f"**stage 4 — {verdict}**", "",
+                f"- translation `{pose['median_translation_cm']:.1f} cm`",
+                f"- rotation `{pose['median_rotation_deg']:.1f} deg`",
+                f"- agreement `{pose.get('agreement_detail', 'n/a')}`",
+                f"- frames corroborating `{pose['frames_corroborating']}/"
+                f"{pose['frames_total']}`", "",
+                ("6-DoF pose entered the graph." if pose["accepted"] else
+                 "The position-only pose stands. A pose that says nothing about "
+                 "rotation beats one that says something wrong."),
+            ]), media_type=rr.MediaType.MARKDOWN))
+        print(f"[replay]  stage 4: pose {verdict.lower()}")
 
     # ======================================================= stage 5: the graph
     ground = json.load(open(OUT / "ground.json"))

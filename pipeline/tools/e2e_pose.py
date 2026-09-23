@@ -239,6 +239,16 @@ def main() -> int:
 
     accepted = n_ok > len(checks) // 2 and agree_ok
     refined = None
+
+    # The best frame's pose in world coordinates, computed whether or not it is admitted
+    # — a refused pose still has to be inspectable, and the demo draws it next to where
+    # our map puts the object so the disagreement is visible rather than only asserted.
+    # Deliberately NOT called `pose_world`: that field stays null when refused, so
+    # nothing downstream can read a rejected pose by forgetting to check `accepted`.
+    best_any = min(checks, key=lambda c: c.translation_cm)
+    rec_any = next(r for r in frames if r["frame"] == best_any.frame)
+    T_world_any = (np.asarray(rec_any["cam_to_world"], float)
+                   @ poses[[r["frame"] for r in frames].index(best_any.frame)])
     if accepted or args.force:
         # Rebuild the target observation exactly as the other stages do, so the id and
         # label this pose attaches to are the same ones the scene graph already holds.
@@ -288,6 +298,9 @@ def main() -> int:
         "per_frame": [vars(c) for c in checks],
         "pose_world": refined.pose.tolist() if refined is not None else None,
         "anchor_frame": refined.anchor_frame if refined is not None else None,
+        # For inspection and for the demo only. Never a substitute for `pose_world`.
+        "rejected_pose_world": None if accepted else T_world_any.tolist(),
+        "best_frame": int(best_any.frame),
     }, open(E2E / "pose.json", "w"), indent=1)
 
     print("\n           -> pose.json")
