@@ -162,3 +162,106 @@ def test_convex_hull_returns_none_for_degenerate_input():
     flat = np.stack([np.linspace(0, 1, 30), np.linspace(0, 1, 30), np.zeros(30)], 1)
     assert convex_hull(flat) == (None, None)                       # coplanar
 
+
+
+# ------------------------------------------- SURFACE vs OBJECT from geometry
+
+from pipeline.observations import (MIN_SUPPORT_AREA_M2, Observation, horizontal_slab,
+                                   to_scene_nodes)
+
+
+def tabletop(centre=(0, 0, 0.75), size=(1.2, 0.8), n=60, seed=0):
+    """A flat horizontal slab of points — a table's top surface."""
+    rng = np.random.default_rng(seed)
+    x = rng.uniform(-size[0] / 2, size[0] / 2, n * n)
+    y = rng.uniform(-size[1] / 2, size[1] / 2, n * n)
+    z = rng.normal(0, 0.004, n * n)
+    return np.stack([x, y, z], 1) + np.asarray(centre)
+
+
+def upright(centre=(0, 0, 0.5), n=40, seed=1):
+    """A tall thin column — nothing rests on it."""
+    rng = np.random.default_rng(seed)
+    return np.stack([rng.normal(0, 0.05, n * n), rng.normal(0, 0.05, n * n),
+                     rng.uniform(-0.5, 0.5, n * n)], 1) + np.asarray(centre)
+
+
+def obs(node_id, label, pts):
+    pose = np.eye(4)
+    pose[:3, 3] = pts.mean(0)
+    return Observation(node_id=node_id, label=label, pose=pose,
+                       extent=pts.max(0) - pts.min(0),
+                       anchor_frame=Frames.keyframe(0), stamp_ns=NS)
+
+
+def test_horizontal_slab_measures_a_tabletop_and_ignores_a_column():
+    area_t, h = horizontal_slab(tabletop())
+    area_c, _ = horizontal_slab(upright())
+    assert area_t > MIN_SUPPORT_AREA_M2 < 1.0
+    assert h == pytest.approx(0.75, abs=0.05)
+    assert area_c < MIN_SUPPORT_AREA_M2
+
+
+def test_slab_area_counts_occupied_cells_not_the_bounding_box():
+    """A sparse ring has a large box and supports nothing."""
+    th = np.linspace(0, 2 * np.pi, 400)
+    ring = np.stack([np.cos(th), np.sin(th), np.zeros_like(th)], 1)
+    area, _ = horizontal_slab(ring)
+    assert area < 0.25 * np.pi          # well under the disc its box implies
+
+
+def test_geometry_decides_surface_regardless_of_the_word_used():
+    """The property the word list cannot have.
+
+    Same geometry, vocabulary changed from English to something else entirely: the
+    classification must not move. A hardcoded {table, floor, shelf, counter, desk, wall}
+    silently reclassifies everything the moment the CLIP vocabulary changes, and takes
+    every `on` relation with it.
+    """
+    from pipeline.scene_graph import NodeKind
+    flat, tall = tabletop(), upright(centre=(3, 0, 0.5))
+    for a, b in (("desk", "chair"), ("Tisch", "Stuhl"), ("surface_0", "thing_1")):
+        nodes = to_scene_nodes([obs("s", a, flat), obs("o", b, tall)],
+                               point_sets={"s": flat, "o": tall})
+        kinds = {n.node_id: n.kind for n in nodes}
+        assert kinds["s"] is NodeKind.SURFACE, f"{a!r} should be a surface by geometry"
+        assert kinds["o"] is NodeKind.OBJECT, f"{b!r} should be an object by geometry"
+
+
+def test_the_word_list_still_decides_when_there_is_no_geometry():
+    """Backward compatible: callers that supply no point sets keep the old behaviour."""
+    from pipeline.scene_graph import NodeKind
+    nodes = to_scene_nodes([obs("s", "desk", tabletop()), obs("o", "chair", upright())])
+    kinds = {n.node_id: n.kind for n in nodes}
+    assert kinds["s"] is NodeKind.SURFACE and kinds["o"] is NodeKind.OBJECT
+    assert all(n.support_area is None for n in nodes)
+
+
+def test_support_area_records_how_the_kind_was_decided():
+    flat = tabletop()
+    n = to_scene_nodes([obs("s", "anything", flat)], point_sets={"s": flat})[0]
+    assert n.support_area is not None and n.support_area > MIN_SUPPORT_AREA_M2
+
+
+def test_a_label_that_sounds_like_a_surface_but_is_not_one():
+    """`desk_5` on the real scene: 351 sparse points, a 2.4 m box, supports nothing.
+    The word says surface; the geometry does not."""
+    from pipeline.scene_graph import NodeKind
+    sparse = upright(centre=(0, 0, 1.0), n=18, seed=3)
+    n = to_scene_nodes([obs("d", "desk", sparse)], point_sets={"d": sparse})[0]
+    assert n.kind is NodeKind.OBJECT
+
+
+def test_same_label_instances_do_not_render_as_one():
+    """"the desk is near the desk" is true of two distinct desks and reads as nonsense
+    in a policy prompt."""
+    from pipeline.scene_graph import Predicate, Relation
+    a = node("desk_1", [0, 0, 0.5], [1, 1, 1], label="desk")
+    b = node("desk_2", [1, 0, 0.5], [1, 1, 1], label="desk")
+    nodes = {n.node_id: n for n in (a, b)}
+    r = Relation("desk_1", Predicate.NEAR, "desk_2", NS)
+    assert r.as_text(nodes) == "the desk is near another desk"
+    c = node("chair_3", [2, 0, 0.5], [1, 1, 1], label="chair")
+    nodes[c.node_id] = c
+    assert (Relation("chair_3", Predicate.NEAR, "desk_1", NS).as_text(nodes)
+            == "the chair is near the desk")

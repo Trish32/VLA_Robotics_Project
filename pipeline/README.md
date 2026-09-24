@@ -100,6 +100,12 @@ pre-grasp standoff measures from. Rejecting 0.4–3.6% of points by local densit
 target's pre-grasp frame **20.1 cm**; 13 points out of 1,142 had been adding 40 cm to the
 chair's height.
 
+**Surfaces are detected, not looked up.** What can support something is decided by
+whether an instance has a horizontal slab of at least 0.25 m², not by a hardcoded
+six-word list inside an open-vocabulary pipeline. Tested for the property that matters:
+replace the labels with German or with meaningless identifiers and the classification
+does not move.
+
 **Relations come from geometry, not bounding boxes.** `inside` is decided by convex-hull
 containment and `near` by surface separation, which removed three spurious edges and
 recovered a true one. The prompt handed to the policy went from *"the chair is inside the

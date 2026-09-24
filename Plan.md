@@ -167,6 +167,33 @@ very nearly does enclose the chair, so 89.9% is a *threshold* decision, not geom
 flatly refuting it. What makes that edge read as nonsense is the **label** — §3's
 problem, not this one. The two were previously conflated.
 
+### Surfaces are detected, not looked up
+
+The last lexical decision in the chain. A hardcoded `{table, floor, shelf, counter,
+desk, wall}` deciding what can support something, inside an open-vocabulary pipeline, is
+a contradiction: it disagreed with the CLIP vocabulary it was fed, and changing the query
+words silently changed which instances could be the *subject* of a relation — taking
+every `on` edge with it.
+
+Measured slab areas on `freiburg3_walking_xyz` fall into two groups with nothing between
+them, so the threshold is not doing the work:
+
+| instance | label | slab (m²) | lexical | geometric |
+|---|---|---|---|---|
+| `desk_2` | desk | 1.258 | SURFACE | SURFACE |
+| `person_3` | person | 0.960 | OBJECT | **SURFACE** |
+| `desk_1` | desk | 0.680 | SURFACE | SURFACE |
+| `desk_5` | desk | 0.125 | **SURFACE** | OBJECT |
+| `chair_4` | chair | 0.123 | OBJECT | OBJECT |
+
+**This is a robustness fix, not an accuracy claim.** With no ground-truth labels there is
+no way to show the geometric answer is more *correct* — only that it does not depend on
+wording, which is tested by re-running the same geometry with the labels replaced by
+German and by meaningless identifiers. The two disagreements are both about bad
+instances: `person_3` is a 4.1 m over-segmented region that genuinely contains table
+surface, and `desk_5` is 351 sparse points that support nothing. Callers supplying no
+point sets keep the word list, so nothing without geometry changes.
+
 **`near`.** Centre distance asks the wrong question about extended objects: the chair
 sits **7 cm** from a desk and **79 cm** from its centre, so the true relation was missed
 while nothing replaced it. Box-gap distance is degenerate in the other direction — all
@@ -207,7 +234,7 @@ is visible and recoverable, a silently truncated instance is neither.
 
 | item | note |
 |---|---|
-| **`to_scene_nodes` surface vocabulary** | a hardcoded six-word set (`table, floor, shelf, counter, desk, wall`) decides `SURFACE` vs `OBJECT` inside an open-vocabulary pipeline. It disagrees with the CLIP vocabulary it is fed — `counter` and `shelf` are surfaces never queried; `chair` is queried but is not a surface. Swap the vocabulary and surface detection silently degrades, taking every `on` relation with it |
+| ~~**`to_scene_nodes` surface vocabulary**~~ | **Done.** `SURFACE` vs `OBJECT` is now decided by whether the instance has a horizontal slab of at least 0.25 m² — roughly a 50 × 50 cm patch, the smallest area that usefully supports something. Vocabulary-independent by construction and tested as such. See below |
 | **ROS2 container mount** | the world model runs live, but staged into the container by hand. A permanent setup needs one line: `- /Users/trish/VLAProjects/pipeline:/ws/src/pipeline:ro` |
 | **Instance density for meshing** | `monitor_4` was 578 points across 1.2 m — roughly 4–5 cm spacing. Fine for a bounding box, thin for a mesh. A denser fusion (smaller `--stride`) is the lever, at TSDF memory cost |
 | **Kaggle token** | used across two sessions; rotate it |

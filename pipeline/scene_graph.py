@@ -125,6 +125,10 @@ class SceneNode:
     # `near` on 11 of 15 pairs where the full point sets support 7. Interior samples do
     # not have that bias. Capped at a couple of hundred points so a node stays publishable.
     sample_points: np.ndarray | None = None   # (S, 3) in anchor_frame
+    # Area of the largest horizontal slab in the instance, m^2, when it was measured.
+    # None means the kind came from the label fallback rather than from geometry — worth
+    # being able to tell apart when a relation looks wrong.
+    support_area: float | None = None
 
     def __post_init__(self) -> None:
         self.pose = np.asarray(self.pose, dtype=np.float64).reshape(4, 4)
@@ -220,8 +224,17 @@ class Relation:
     evidence: str = ""       # why this was inferred, for debugging a wrong plan
 
     def as_text(self, nodes: dict[str, SceneNode]) -> str:
+        """Render for a policy prompt.
+
+        Two instances that share a label must not render identically: "the desk is near
+        the desk" is geometrically true of two distinct desks and reads as nonsense to
+        whatever consumes the prompt. Naming the second one "another desk" keeps the
+        sentence honest without exposing instance ids, which mean nothing to a policy.
+        """
         s = nodes[self.subject].label if self.subject in nodes else self.subject
         o = nodes[self.object].label if self.object in nodes else self.object
+        if s == o:
+            return f"the {s} is {self.predicate.value} another {o}"
         return f"the {s} is {self.predicate.value} the {o}"
 
 

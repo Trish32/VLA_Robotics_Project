@@ -286,15 +286,70 @@ def point_sets_from(observations: list[Observation],
     return out
 
 
+def horizontal_slab(points: np.ndarray, *, band: float = 0.06,
+                    cell: float = 0.05, steps: int = 40) -> tuple[float, float]:
+    """(area, height) of the largest horizontal slab in an instance, in m^2 and metres.
+
+    A support surface is a large flat horizontal patch — that is what makes it possible
+    to put something on it, and it is measurable. Sweeps a thin band through the
+    instance's height and reports the occupied-cell area the band covers.
+
+    Occupied cells rather than bounding-box area: a sparse ring of points has a large
+    bounding box and supports nothing, and a proposal's box is exactly the thing not to
+    trust here.
+
+    Only meaningful because the world frame is gravity-aligned upstream
+    (`pipeline/gravity.py`). On the raw SLAM frame the supporting plane's normal sat
+    50 deg off z, and "horizontal" would have been measured in a tilted frame.
+    """
+    P = np.asarray(points, float).reshape(-1, 3)
+    if len(P) < 20:
+        return 0.0, 0.0
+    z = P[:, 2]
+    best = (0.0, 0.0)
+    for h in np.linspace(z.min(), z.max(), steps):
+        sel = P[np.abs(z - h) <= band / 2]
+        if len(sel) < 20:
+            continue
+        ij = np.floor(sel[:, :2] / cell).astype(np.int64)
+        area = len(np.unique(ij, axis=0)) * cell * cell
+        if area > best[0]:
+            best = (float(area), float(h))
+    return best
+
+
+# A support surface must be big enough to put something on. 0.25 m^2 is roughly a
+# 50x50 cm patch — about the smallest area that usefully supports a manipulable object.
+# Physically argued rather than fitted: on the TUM scene the measured slabs fall into
+# 0.12-0.13 and 0.68-1.26 with nothing between, so any threshold in that gap gives the
+# same answer and the exact value is not doing the work.
+MIN_SUPPORT_AREA_M2 = 0.25
+
+
 def to_scene_nodes(observations: list[Observation], *,
                    point_sets: dict[str, np.ndarray] | None = None,
+                   min_support_area: float = MIN_SUPPORT_AREA_M2,
                    surfaces=frozenset(
                        {"table", "floor", "shelf", "counter", "desk", "wall"})):
     """Observations -> SceneNode list, ready for `SceneGraph.upsert`.
 
-    `point_sets` maps node_id -> that instance's points. Supplying it attaches a convex
-    hull to each node, which is what lets `inside` be decided on the geometry instead of
-    on nesting bounding boxes. Omitting it is supported and falls back to the box.
+    `point_sets` maps node_id -> that instance's points. Supplying it does two things:
+    attaches a convex hull, which is what lets `inside` be decided on geometry rather
+    than on nesting bounding boxes; and decides SURFACE vs OBJECT by whether the
+    instance actually has a horizontal slab big enough to support something.
+
+    **The word list is the fallback, not the rule.** A hardcoded six-word set deciding
+    SURFACE inside an open-vocabulary pipeline is a contradiction: it disagrees with the
+    CLIP vocabulary it is fed (`counter` and `shelf` are never queried; `chair` is
+    queried and is not a surface), and changing the query vocabulary silently changes
+    which instances can support anything — taking every `on` relation with it. Geometry
+    does not care what the object is called.
+
+    This is a robustness fix, not an accuracy claim: with no ground-truth labels there
+    is no way to show the geometric answer is *more correct*, only that it does not
+    depend on wording. On the TUM scene the two disagree about a 4.1 m region labelled
+    "person" that does contain real table surface, and about a 351-point proposal
+    labelled "desk" that supports nothing.
     """
     from pipeline.identity import Frames
     from pipeline.scene_graph import NodeKind, SceneNode
@@ -302,12 +357,18 @@ def to_scene_nodes(observations: list[Observation], *,
     nodes = []
     for o in observations:
         hv = hp = sp = None
+        kind = NodeKind.SURFACE if o.label in surfaces else NodeKind.OBJECT
+        slab_area = None
         if point_sets is not None and o.node_id in point_sets:
-            hv, hp = convex_hull(point_sets[o.node_id])
-            sp = downsample(point_sets[o.node_id])
+            P = point_sets[o.node_id]
+            hv, hp = convex_hull(P)
+            sp = downsample(P)
+            slab_area, _ = horizontal_slab(P)
+            kind = (NodeKind.SURFACE if slab_area >= min_support_area
+                    else NodeKind.OBJECT)
         nodes.append(SceneNode(
             node_id=o.node_id,
-            kind=NodeKind.SURFACE if o.label in surfaces else NodeKind.OBJECT,
+            kind=kind,
             label=o.label,
             tf_frame=Frames.instance(o.node_id),
             anchor_frame=o.anchor_frame,
@@ -318,5 +379,6 @@ def to_scene_nodes(observations: list[Observation], *,
             hull_vertices=hv,
             hull_planes=hp,
             sample_points=sp,
+            support_area=slab_area,
         ))
     return nodes
