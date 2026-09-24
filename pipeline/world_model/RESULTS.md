@@ -92,24 +92,65 @@ What the spread *does* track is horizon:
 So it is a good horizon discount and a useless per-candidate discriminator. Since every
 candidate in a plan shares a horizon, weighting it changed nothing except appearances.
 
-## Object dynamics · MEASURED, AND NEGATIVE
+## Object dynamics · MEASURED, AND NEGATIVE — with the cause identified
 
-`cube_to_bowl_5_with_mask` — the only dataset here with per-frame object masks.
-**One episode**, so no episode-level holdout is possible; a temporal 25% tail is used
-instead and it is the weaker claim.
+The earlier version of this section blamed the data: one episode of a single binary
+foreground mask. That was addressed — `extract_tracks.py` runs this repo's own SAM ViT-H
+and CLIP over the raw `cube_to_bowl_5` video and produces **per-instance tracks for all
+five episodes**. The object pathway still does not learn, and the reason turns out not to
+be the one assumed.
 
-| predictor | slot RMSE |
+### The tracks themselves are good
+
+| | |
 |---|---|
-| identity — *the object does not move* | 0.35029 |
-| **learned dynamics** | **0.35541** |
+| instances found | `a small dark cube`, `a green rubber ball` (+ the bowl on one episode) |
+| cube travel | **0.67 – 0.81** normalised image units — table → gripper → into the bowl |
+| ball travel | **0.046 – 0.085** — correctly static |
+| measured (not forward-filled) frames | 2,048 of 2,343 usable transitions |
 
-**The model is worse than assuming nothing moves.** One episode of a single binary
-foreground mask does not supervise object dynamics, and nothing here should be read as
-predicting how objects respond to actions. The architecture carries an object pathway;
-the data to fit it does not exist in this repo.
+Verified by drawing them on the frames, which is the only check that works: a track file
+looks healthy whatever it contains.
 
-Proprioception on the same run came out at 0.01572 against a constant-velocity 0.01582 —
-a 0.6% difference, i.e. a tie. Six state dimensions and one episode.
+### The model still ties identity, at every step size
+
+Split 2 train / 1 val / 1 test **episodes**, after dropping one idle episode (below).
+
+| stride | identity | constant velocity | learned |
+|---|---|---|---|
+| 1 frame | 0.09750 | 0.13638 | **0.09742** (+0.1%) |
+| 10 frames | 0.31578 | 0.50117 | **0.31514** (+0.2%) |
+
+Both runs restore **epoch 0** — the best validation score is at initialisation, so
+training never improves held-out performance. The model ties identity because it *is*
+identity; it never usefully leaves its initialisation.
+
+### Why: the per-step signal is below the measurement noise
+
+| | |
+|---|---|
+| median per-step cube displacement | **0.00084** — about half a pixel at 640 px |
+| linear R² from the full action, 1 frame | **0.008** (x), **0.016** (y) |
+| linear R² from the full action, 30 frames | 0.055 (x), **0.139** (y) |
+
+The action-to-object relationship is not absent, it is **buried**: it grows monotonically
+with horizon, from R² = 0.016 at one frame to 0.139 at one second. Asking the model to
+predict one frame ahead is asking it to resolve a signal the extraction cannot measure.
+Training at stride 10 confirmed the diagnosis without fixing the outcome — the signal
+improves but two training episodes is still far too little to fit it.
+
+**So per-instance tracking was necessary and not sufficient.** The binding constraints
+are now named rather than guessed: single-step displacement under the tracker's noise
+floor, and two training episodes.
+
+### Constant velocity is the *wrong* baseline for these tracks
+
+Worth recording because it inverts the robot case: for the object tracks identity
+(0.0975) beats constant velocity (0.1364), because centroid jitter makes the velocity
+channel mostly noise and carrying it forward amplifies it. For the robot the order is the
+other way round. Velocity integration is therefore chosen **per stream**; applying one
+setting to both started the object pathway from the worse of the two predictors and cost
+it 19% against identity.
 
 ## What the scoring loop does on a real scene · MEASURED
 

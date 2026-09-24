@@ -77,9 +77,28 @@ def test_untrained_model_is_exactly_constant_velocity_when_integrating():
     assert torch.allclose(out.robot[:, 3:], vel, atol=1e-6)
 
 
-def test_integrate_velocity_rejects_odd_dims():
-    with pytest.raises(ValueError, match="even dims"):
+def test_integrate_velocity_rejects_an_odd_robot_dim():
+    with pytest.raises(ValueError, match="even robot dim"):
         LatentDynamics(8, 7, 4, integrate_velocity=True)
+
+
+def test_velocity_integration_is_chosen_per_stream():
+    """Which baseline is stronger is a property of the SIGNAL, not the architecture.
+
+    Measured on cube_to_bowl_5: constant velocity beats identity for the robot
+    (0.0140 vs 0.0339) and loses to it for the mask-derived object tracks
+    (0.169 vs 0.121), because centroid jitter makes the slot velocity channel mostly
+    noise. One setting for both streams started the object pathway from the worse
+    predictor.
+    """
+    pos, vel = torch.tensor([[1., 2, 3]]), torch.tensor([[0.1, 0.2, 0.3]])
+    spos, svel = torch.tensor([[[5., 6]]]), torch.tensor([[[0.5, 0.6]]])
+    z = SceneLatent(torch.cat([spos, svel], -1), torch.cat([pos, vel], -1))
+    f = LatentDynamics(4, 6, 4, hidden=16, layers=1,
+                       integrate_velocity=True, integrate_slot_velocity=False)
+    out, _ = f(z, torch.randn(1, 4))
+    assert torch.allclose(out.robot[:, :3], pos + vel, atol=1e-6)   # robot integrates
+    assert torch.allclose(out.slots[..., :2], spos, atol=1e-6)      # slots hold still
 
 
 def test_action_dimension_is_checked():

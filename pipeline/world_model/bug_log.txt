@@ -162,6 +162,102 @@ Lesson kept: a single aggregate over a skewed error distribution is a choice abo
              which samples matter, not a neutral summary. Say which one, or report both.
 
 
+[8] A track that looked healthy and was on the wrong object
+-------------------------------------------------------------
+Date:        2026-09-23
+Fingerprint: the extracted "orange plastic bowl" track reported 99.5% visibility and a
+             travel of 0.811 normalised image units. The bowl never moves.
+
+Cause:       instances were assigned by CLIP label argmax alone. The robot arm is
+             orange, CLIP scores it happily as "an orange bowl", and every time the arm
+             swung past a keyframe it took over the bowl's identity. Every summary
+             statistic looked healthy; only drawing the track on the frames showed it.
+
+Fix:         associate on label AND position — a keyframe re-anchor must land near where
+             the track already is, the same reason `InstanceRegistry` associates by IoU
+             in 3-D. Objects do not teleport between observations.
+
+Metric before/after (episode 0 bowl travel):  0.811 -> 0.131
+
+Follow-on:   a `--check` flag renders the overlay, because the failure was invisible to
+             every number the extractor produced.
+
+
+[9] Optical flow followed the arm away and recorded it as object motion
+-------------------------------------------------------------------------
+Date:        2026-09-23
+Fingerprint: in episode 2 the cube and bowl markers both ended up riding the retreating
+             arm while the cube sat in the bowl.
+
+Cause:       positions between SAM keyframes come from Lucas-Kanade flow, which follows
+             whatever texture it latched onto. When the gripper occludes the cube, that
+             texture is the gripper. The flow segment was recorded as measured data.
+
+Fix:         trust a flow segment only when BRACKETED by two SAM confirmations, and mark
+             everything else not-visible. The dataset then skips any transition whose
+             frames were not all measured. A guess recorded as a measurement is how a
+             dynamics model learns motion that never happened.
+
+Effect:      the contaminated bowl track fell below the visibility threshold and was
+             dropped from 4 of 5 episodes automatically. 295 of 2,343 transitions are
+             now excluded as unobserved.
+
+
+[10] Half the dataset was a demonstration where nothing happens
+-----------------------------------------------------------------
+Date:        2026-09-23
+Fingerprint: episode 3 is 1,797 frames — 43% of `cube_to_bowl_5` — with a cube travel of
+             0.018 against 0.67-0.81 in every other episode.
+
+Cause:       not a bug in the tracker. The tracks are correct; the robot simply never
+             performs the task in that episode.
+
+Fix:         `drop_idle_episodes`, thresholded on object travel inside a wide gap
+             (0.070 idle against 0.67 working; the threshold is 0.20). Training on it
+             would have made an identity predictor look unbeatable for a reason with
+             nothing to do with dynamics.
+
+
+[11] The train/test split drifted from the data it was splitting
+-------------------------------------------------------------------
+Date:        2026-09-23
+Fingerprint: `1193 train / 0 test transitions` at stride 30.
+
+Cause:       split boundaries were computed arithmetically as
+             `len(state) - 2*stride` per episode, in parallel with an index that was
+             separately filtered for visibility. The two agreed until the filter started
+             dropping transitions, after which train and test were misaligned — and at a
+             long stride the test range came out empty, which is the only reason it was
+             noticed. At stride 1 it silently mis-split.
+
+Fix:         derive the split from the dataset's own index by episode membership, and
+             fail loudly if any split is empty. Anything computed in parallel with the
+             structure it describes will drift from it.
+
+Consequence: every cube_to_bowl_5 number measured before this was recomputed. The
+             corrected result moved the object pathway from "19% worse than identity" to
+             "ties identity", which is a materially different conclusion.
+
+
+[12] One velocity setting for two streams with opposite statistics
+--------------------------------------------------------------------
+Date:        2026-09-23
+Fingerprint: with velocity integration on, the object pathway scored 19% WORSE than
+             identity; the robot pathway needed it to beat identity at all.
+
+Cause:       `integrate_velocity` made the untrained model a constant-velocity predictor
+             for BOTH streams. For the robot that is the stronger baseline (0.0140
+             against identity 0.0339). For the mask-derived object tracks it is the
+             weaker one (0.1364 against identity 0.0975), because centroid jitter makes
+             the slot velocity channel mostly noise. The object pathway was started from
+             the worse of the two predictors.
+
+Fix:         choose it per stream (`integrate_slot_velocity`). Which baseline is stronger
+             is a property of the signal, not of the architecture.
+
+Metric before/after (objects vs identity):  -19.2%  ->  +0.1%
+
+
 VERIFICATION STATUS
 ---------------------
 VERIFIED (CPU, tiny inputs, 32 tests):
@@ -182,10 +278,13 @@ NOT VALIDATED:
     (14.1x predicted against 14.2x realised over 8 steps) but has rank correlation
     -0.071 against realised per-rollout error, so it cannot say which candidate is
     riskier. The risk weight defaults to zero because of this.
-  - object dynamics. On the only object data available (one episode, one binary mask)
-    the model scores 0.35541 against an identity baseline of 0.35029 — worse than
-    assuming the object does not move. The object pathway is architecture, not a
-    result, and nothing downstream should treat its predictions as informative.
+  - object dynamics. Per-instance tracks now exist for all five cube_to_bowl_5
+    episodes (extract_tracks.py) and are verified correct, but the model ties an
+    identity predictor at every step size tested and its best validation score is at
+    epoch 0. Cause measured: median single-step displacement 0.00084 (half a pixel),
+    action R^2 = 0.016 at one frame rising to 0.139 at one second, on two training
+    episodes. The object pathway is architecture, not a result, and nothing downstream
+    should treat its predictions as informative.
   - (closed) multi-step rollout error is now measured over 8 steps on 319 held-out
     windows; see RESULTS.md. The model beats constant velocity at 8/8 horizons on global
     RMSE and 0/8 on the median sample.

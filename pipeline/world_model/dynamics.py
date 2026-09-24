@@ -59,7 +59,8 @@ class LatentDynamics(nn.Module):
 
     def __init__(self, slot_dim: int, robot_dim: int, action_dim: int, *,
                  hidden: int = 128, layers: int = 2, heads: int = 4,
-                 gate_bias: float = -3.0, integrate_velocity: bool = False) -> None:
+                 gate_bias: float = -3.0, integrate_velocity: bool = False,
+                 integrate_slot_velocity: bool | None = None) -> None:
         """`integrate_velocity` makes the untrained model a CONSTANT-VELOCITY predictor
         rather than an identity one.
 
@@ -75,11 +76,22 @@ class LatentDynamics(nn.Module):
         """
         super().__init__()
         self.slot_dim, self.robot_dim, self.action_dim = slot_dim, robot_dim, action_dim
-        if integrate_velocity and (robot_dim % 2 or (slot_dim > 1 and slot_dim % 2)):
+        if integrate_velocity and robot_dim % 2:
             raise ValueError(
                 "integrate_velocity reads the latent as [position | velocity] and needs "
-                f"even dims; got robot {robot_dim}, slot {slot_dim}")
+                f"an even robot dim; got {robot_dim}")
         self.integrate_velocity = integrate_velocity
+        # Velocity integration is chosen PER STREAM, because which baseline is stronger
+        # is a property of the signal, not of the architecture. Measured on
+        # cube_to_bowl_5: for the robot, constant velocity (0.0140) beats identity
+        # (0.0339); for the mask-derived object tracks the order reverses — identity
+        # 0.121 against constant velocity 0.169, because centroid jitter makes the
+        # velocity channel mostly noise and carrying it forward amplifies it. Applying
+        # one choice to both streams started the object pathway from the worse of the
+        # two predictors.
+        self.integrate_slot_velocity = (integrate_velocity
+                                        if integrate_slot_velocity is None
+                                        else integrate_slot_velocity)
         self.slot_in = nn.Linear(slot_dim, hidden)
         self.robot_in = nn.Linear(robot_dim, hidden)
         self.act_in = nn.Sequential(nn.Linear(action_dim, hidden), nn.GELU(),
@@ -123,8 +135,9 @@ class LatentDynamics(nn.Module):
             delta = delta * z.mask.unsqueeze(-1)
 
         base_slots, base_robot = z.slots, z.robot
-        if self.integrate_velocity:
+        if self.integrate_slot_velocity and self.slot_dim % 2 == 0:
             base_slots = self._integrate(base_slots)
+        if self.integrate_velocity:
             base_robot = self._integrate(base_robot)
         return (SceneLatent(base_slots + delta, base_robot + self.robot_out(robot_tok),
                             z.mask),

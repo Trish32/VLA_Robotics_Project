@@ -2,7 +2,27 @@
 
 What is not done, and what would close it. Measurements are in [RESULTS.md](RESULTS.md).
 
-## 1. The object pathway needs object data
+## 1. The object pathway is signal-limited, not mask-limited — MEASURED
+
+Previously this section said the object pathway needed per-instance masks and named
+running our own OpenMask3D over the `cube_to_bowl_5` video as the cheaper route. That is
+done (`extract_tracks.py`), the tracks are good, and **the model still ties identity**.
+
+The cause is now measured rather than assumed: median single-step cube displacement is
+0.00084 normalised image units — half a pixel — and a linear map from the action explains
+R² = 0.016 of it. At a one-second step the same fit reaches R² = 0.139. The relationship
+is real and buried under the extraction's own noise at the frame rate the model was being
+asked to predict at.
+
+**What would close it**, in order of expected effect:
+
+| lever | why |
+|---|---|
+| more demonstration episodes | two training episodes; validation is best at epoch 0, so every run overfits immediately. This is the binding constraint |
+| depth, or a calibrated camera | image-plane centroids conflate object motion with camera-relative geometry. Metric 3-D tracks would remove a whole noise source |
+| predicting a longer step | already implemented (`--stride`); improves the signal but cannot substitute for data |
+
+### The old section, kept because the constraint it names is still real
 
 The binding gap. The architecture predicts per-object motion; the data to fit it does
 not exist in this repo.

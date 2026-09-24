@@ -79,21 +79,39 @@ def evaluate(model, ds, idx, n_slots, slot_dim, device=None) -> dict[str, float]
         "model_robot_rmse": err(pos(pred.robot), pos(batch["robot_next"])),
         "identity_robot_rmse": err(pos(batch["robot"]), pos(batch["robot_next"])),
     }
-    # Constant velocity uses the PREVIOUS step, which only exists inside an episode, so
-    # it is computed on the transitions that have a predecessor.
-    prev = [i for i, j in enumerate(idx) if j - 1 in set(idx)]
-    if prev:
-        p = torch.tensor(prev, device=device)
-        prev_rows = [ds[int(idx[i]) - 1] for i in prev]
-        prev_robot = torch.from_numpy(
-            np.stack([r["robot"] for r in prev_rows])).float().to(device)
-        cv = pos(batch["robot"][p]) + (pos(batch["robot"][p]) - pos(prev_robot))
-        out["constvel_robot_rmse"] = err(cv, pos(batch["robot_next"][p]))
-        out["model_robot_rmse_cvsubset"] = err(pos(pred.robot[p]),
-                                               pos(batch["robot_next"][p]))
+    # Constant velocity comes from the latent's OWN velocity half, not from a lookup of
+    # the neighbouring dataset row.
+    #
+    # The lookup version indexed `ds[j - 1]` and assumed it was the temporal predecessor
+    # of `ds[j]`. That held only while the index was a contiguous range; once the
+    # visibility filter started skipping unobserved transitions it paired unrelated
+    # frames — sometimes across episodes — and inflated the baseline five-fold
+    # (0.07093 against a true 0.01397), which contradicted the untrained model that IS
+    # this baseline by construction.
+    if ds.velocity:
+        out["constvel_robot_rmse"] = err(pos(batch["robot"]) + batch["robot"][..., d:],
+                                         pos(batch["robot_next"]))
     if "slots" in batch:
-        out["model_slot_rmse"] = err(pred.slots, batch["slots_next"])
-        out["identity_slot_rmse"] = err(batch["slots"], batch["slots_next"])
+        # Same position/velocity split as the robot half. Scoring the whole slot vector
+        # would mix a position error with a velocity error and compare it against
+        # baselines computed on position alone — the exact confusion that made the robot
+        # numbers uncomparable before.
+        sd = ds.slot_norm.mean.shape[0] if ds.slot_norm is not None else 0
+        sp = (lambda x: x[..., :sd]) if ds.velocity and sd else (lambda x: x)
+        out["model_slot_rmse"] = err(sp(pred.slots), sp(batch["slots_next"]))
+        out["identity_slot_rmse"] = err(sp(batch["slots"]), sp(batch["slots_next"]))
+        if ds.velocity and sd:
+            # Constant velocity for slots: carry the slot's own velocity half forward.
+            cv_slots = sp(batch["slots"]) + batch["slots"][..., sd:]
+            out["constvel_slot_rmse"] = err(cv_slots, sp(batch["slots_next"]))
+        # Per-slot, so a model that only learns the static objects cannot hide behind an
+        # average with the one object that actually moves.
+        per = torch.sqrt(((sp(pred.slots) - sp(batch["slots_next"])) ** 2).mean(-1)
+                         ).mean(0)
+        per_id = torch.sqrt(((sp(batch["slots"]) - sp(batch["slots_next"])) ** 2).mean(-1)
+                            ).mean(0)
+        out["per_slot_model"] = [float(x) for x in per]
+        out["per_slot_identity"] = [float(x) for x in per_id]
     model.train()
     return out
 
@@ -109,6 +127,15 @@ def main() -> int:
     ap.add_argument("--members", type=int, default=4)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--holdout", type=int, default=1, help="episodes held out")
+    ap.add_argument("--slots-from-identity", action="store_true",
+                    help="start the OBJECT pathway from identity rather than constant "
+                         "velocity. Correct when the tracks are jittery enough that "
+                         "their velocity channel is noise — check which baseline wins")
+    ap.add_argument("--stride", type=int, default=1,
+                    help="prediction step in frames. Single-step object motion on these "
+                         "tracks sits below the extraction noise floor; see data.py")
+    ap.add_argument("--drop-idle", action="store_true",
+                    help="exclude episodes in which no tracked object ever moves")
     ap.add_argument("--temporal-holdout", type=float, default=0.0,
                     help="instead hold out this fraction of the END of each episode; "
                          "for datasets with a single episode, where an episode split "
@@ -117,16 +144,23 @@ def main() -> int:
     args = ap.parse_args()
 
     from common.device import pick_device
-    from pipeline.world_model.data import (TransitionDataset, load_episodes,
-                                           split_episodes)
+    from pipeline.world_model.data import (TransitionDataset, drop_idle_episodes,
+                                           load_episodes, split_episodes)
     from pipeline.world_model.dynamics import DynamicsEnsemble
 
     acc = pick_device()
     eps = load_episodes(args.data)
     print(f"[wm] {len(eps)} episodes from {Path(args.data).name}")
+    if args.drop_idle:
+        eps, idle = drop_idle_episodes(eps)
+        if idle:
+            n = sum(len(e["state"]) for e in idle)
+            print(f"[wm] dropped {len(idle)} idle episode(s), {n} frames — no tracked "
+                  f"object moves in them, so they would teach 'nothing happens' at a "
+                  f"rate the task never has")
 
     if args.temporal_holdout > 0:
-        ds = TransitionDataset(eps)
+        ds = TransitionDataset(eps, stride=args.stride)
         n = len(ds)
         cut = int(n * (1 - args.temporal_holdout))
         train_idx, test_idx = np.arange(cut), np.arange(cut, n)
@@ -143,14 +177,29 @@ def main() -> int:
                 "weaker claim it is")
         tr, rest = eps[:-2], eps[-2:]
         val_eps, te = rest[:1], rest[1:]
-        base = TransitionDataset(tr)
+        base = TransitionDataset(tr, stride=args.stride)
         ds = TransitionDataset(tr + val_eps + te, state_norm=base.state_norm,
-                               action_norm=base.action_norm, slot_norm=base.slot_norm)
-        n_tr = sum(max(0, len(e["state"]) - 2) for e in tr)
-        n_val = sum(max(0, len(e["state"]) - 2) for e in val_eps)
-        train_idx = np.arange(n_tr)
-        val_idx = np.arange(n_tr, n_tr + n_val)
-        test_idx = np.arange(n_tr + n_val, len(ds))
+                               action_norm=base.action_norm, slot_norm=base.slot_norm,
+                               stride=args.stride)
+        # Derive the split from the dataset's OWN index, not from episode lengths.
+        #
+        # The arithmetic version assumed each episode contributes
+        # `len(state) - 2*stride` transitions. That stopped being true the moment
+        # unobserved transitions were filtered out: the computed boundaries no longer
+        # matched the real index, so train and test were misaligned — and at stride 30
+        # the test range came out empty, which is how the mismatch surfaced. Any split
+        # computed in parallel with the thing it is splitting will drift from it.
+        ep_of = np.array([e for e, _ in ds.index])
+        n_train_eps, n_val_eps = len(tr), len(val_eps)
+        train_idx = np.flatnonzero(ep_of < n_train_eps)
+        val_idx = np.flatnonzero((ep_of >= n_train_eps)
+                                 & (ep_of < n_train_eps + n_val_eps))
+        test_idx = np.flatnonzero(ep_of >= n_train_eps + n_val_eps)
+        for name, ix in (("train", train_idx), ("val", val_idx), ("test", test_idx)):
+            if not len(ix):
+                raise SystemExit(
+                    f"{name} split is empty at stride {args.stride} — too few observed "
+                    "transitions per episode for this prediction step")
         split = f"{len(tr)} train / 1 val / 1 test episodes"
 
     print(f"[wm] {len(train_idx)} train / {len(test_idx)} test transitions ({split})")
@@ -160,7 +209,10 @@ def main() -> int:
     model = DynamicsEnsemble(max(ds.slot_dim, 1), ds.robot_dim,
                              ds.action_norm.mean.shape[0], n_members=args.members,
                              hidden=args.hidden, layers=args.layers,
-                             integrate_velocity=ds.velocity).to(acc.device)
+                             integrate_velocity=ds.velocity,
+                             integrate_slot_velocity=(ds.velocity
+                                                      and not args.slots_from_identity)
+                             ).to(acc.device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     rng = np.random.default_rng(0)
     best_val, best_state, best_ep = float("inf"), None, -1
@@ -209,6 +261,8 @@ def main() -> int:
     # carried, robot_dim is 2x the state width, and saving the state width instead
     # makes every consumer rebuild a different architecture and fail to load.
     ckpt = {"state_dict": model.state_dict(),
+            "integrate_slot_velocity": bool(ds.velocity
+                                            and not args.slots_from_identity),
             "slot_dim": max(ds.slot_dim, 1),
             "robot_dim": int(ds.robot_dim),
             "state_dim": int(ds.state_norm.mean.shape[0]),
@@ -222,7 +276,8 @@ def main() -> int:
     from pipeline.world_model.dynamics import DynamicsEnsemble as _DE
     _probe = _DE(ckpt["slot_dim"], ckpt["robot_dim"], ckpt["action_dim"],
                  n_members=ckpt["members"], hidden=ckpt["hidden"],
-                 layers=ckpt["layers"], integrate_velocity=ckpt["integrate_velocity"])
+                 layers=ckpt["layers"], integrate_velocity=ckpt["integrate_velocity"],
+                 integrate_slot_velocity=ckpt["integrate_slot_velocity"])
     _probe.load_state_dict(ckpt["state_dict"])
     torch.save(ckpt, out / "dynamics.pt")
 
@@ -239,8 +294,21 @@ def main() -> int:
         print("       NOTE: the model does NOT beat constant velocity. It has not "
               "learned anything the action explains; do not plan with it.")
     if "model_slot_rmse" in final:
-        print(f"       slots: model {final['model_slot_rmse']:.5f} vs identity "
-              f"{final['identity_slot_rmse']:.5f}")
+        sid, smd = final["identity_slot_rmse"], final["model_slot_rmse"]
+        scv = final.get("constvel_slot_rmse")
+        print(f"\n[wm] objects: identity {sid:.5f}"
+              + (f"  const-vel {scv:.5f}" if scv else "")
+              + f"  model {smd:.5f}   ({(1 - smd / sid) * 100:+.1f}% vs identity)")
+        if "per_slot_model" in final:
+            labels = getattr(ds, "slot_labels", None) or [
+                f"slot {i}" for i in range(len(final["per_slot_model"]))]
+            for lab, m_, i_ in zip(labels, final["per_slot_model"],
+                                   final["per_slot_identity"]):
+                print(f"       {lab:26} model {m_:.5f}  identity {i_:.5f}  "
+                      f"({(1 - m_ / i_) * 100:+.1f}%)")
+        if smd >= sid:
+            print("       NOTE: worse than assuming objects do not move. The object "
+                  "pathway is not learning; do not plan object motion with it.")
     final["split"] = split
     final["train_transitions"] = int(len(train_idx))
     final["test_transitions"] = int(len(test_idx))
