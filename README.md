@@ -4,16 +4,6 @@ An **object-centric RGB-D perception stack for embodied AI** — camera localiza
 instance segmentation and 6-DoF object pose fused into a hierarchical semantic world model,
 exposed through ROS2/TF2 and read by a VLA policy for action chunking.
 
-![end-to-end run](pipeline/assets/e2e_demo.gif)
-
-*One run on TUM `freiburg3_walking_xyz` — a cluttered office with people walking through it.
-[Full resolution](pipeline/assets/e2e_demo.mp4) · [the stack in detail](pipeline/)*
-
-CUDA-first **adaptations**, not reimplementations: upstream stays pinned and unvendored, our
-edits live in each project's `patches/`, and the rule for every project is **load the official
-weights at 0 missing / 0 unexpected before anything is changed.** An adaptation that was never
-checked against the original is not measurable.
-
 > **Sibling repo — [VLM-AD-Project](https://github.com/Trish32/VLM-AD-Project)** — pure-PyTorch
 > ports of BEVFormer, BEVFusion, FlashOcc, Simple-BEV, Sparse4D v2/v3, QCNet, a closed-loop
 > KBM simulator and **DiffusionDrive**, all running on Apple Silicon (MPS) without
@@ -50,6 +40,53 @@ RGB-D ──▶ ORB-SLAM3 / DROID-SLAM ──▶ TSDF fusion ──▶ OpenMask3
 **→ [The stack, the demo, and the honest limit](pipeline/)**
 **→ [RESULTS.md](RESULTS.md)** — every measurement, labelled MEASURED / EXACT / MODELLED
 **→ [Plan.md](Plan.md)** — what is *not* done, why, and what would close it
+
+---
+
+## What the simulator found
+
+[`pipeline/sim/`](pipeline/sim/) is a MuJoCo cube-to-bowl arena where the stack closes the
+loop — perceive, predict, choose, act, and count what happened. Three results, each an
+attempt to kill a claim rather than support one.
+
+### Selection has no headroom to win
+
+![selection ceiling](pipeline/sim/assets/fig1_selection.png)
+
+Same policy, same task, same commitment schedule; only the chooser changes. Perfect
+episode-depth selection — rewind all 8 candidates to the end, keep whichever the simulator
+says finishes — scores **99.0%**, identical to running the policy with no selection at all.
+A winning candidate exists at **100%** of decisions and the policy's own chunk is already
+one of them, so the headroom is **+0.0 points**. The chunk-depth heuristic's 88.5% is
+*below* both: it was not failing to find the best candidate, it was overriding a policy
+that was already right.
+
+### Perception and dynamics are not the bottleneck
+
+![exclusions](pipeline/sim/assets/fig2_exclusions.png)
+
+The result above only means something if the alternatives were checked. SAM+CLIP holds the
+cube through the frames where the gripper occludes it — **precision 1.000, recall 0.913,
+F1 0.955** over 32 episodes with a quarter sabotaged into near-misses, every error a missed
+detection rather than a false one, and **1.71 cm** closed-loop centroid error. And the world
+model does not destroy the grasp geometry it is asked to roll forward: at the planning
+horizon a linear probe recovers pad-to-cube clearance at **R² 0.906** from the model's own
+rollout, against 0.907 from using no dynamics at all — a cost of 0.001.
+
+### One line of XML was producing the failures
+
+![solver repair](pipeline/sim/assets/fig3_solver.gif)
+
+Off-centre grasps appeared to launch the cube, and a fix was designed for the planner
+before the cause was checked. It was the contact solver: free objects at `solref=0.006`
+against a table at MuJoCo's 0.02 default resolve a millimetre of penetration with an
+impulse that ejects the cube from 0.7 to **83 m/s**. An arena-wide `solref=0.03` takes the
+blow-up rate from **5.5% to 0.5%** — and *increases* peak penetration to 18 mm, because
+what changed is how the penetration is resolved, not whether it happens.
+[Full resolution](pipeline/sim/assets/fig3_solver.mp4) ·
+[still](pipeline/sim/assets/fig3_solver.png)
+
+**→ [The commitment sweep, the veto, and every withdrawn claim](pipeline/#what-the-arena-measured)**
 
 ---
 

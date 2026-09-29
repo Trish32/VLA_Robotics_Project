@@ -1,0 +1,21 @@
+{
+ "model_robot_rmse": 0.2332201600074768,
+ "identity_robot_rmse": 0.38217711448669434,
+ "constvel_robot_rmse": 0.5743159651756287,
+ "model_slot_rmse": 0.030188554897904396,
+ "identity_slot_rmse": 0.043678171932697296,
+ "constvel_slot_rmse": 0.04016789048910141,
+ "per_slot_model": [
+  0.018896589055657387,
+  0.0004336624115239829,
+  0.0023535885848104954
+ ],
+ "per_slot_identity": [
+  0.03646521642804146,
+  0.0,
+  0.00033033982617780566
+ ],
+ "split": "1663 train / 120 val / 120 test episodes",
+ "train_transitions": 377016,
+ "test_transitions": 26256
+}

@@ -1,0 +1,8 @@
+{
+ "test_mse": 0.0014173119561746716,
+ "constant_mse": 0.05468760430812836,
+ "distance_mse": 0.032412320375442505,
+ "gamma": 0.99,
+ "train_frames": 60103,
+ "test_frames": 7069
+}

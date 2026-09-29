@@ -170,13 +170,17 @@ def main() -> int:
         # Three-way, by episode. Early stopping needs a set that is NOT the one being
         # reported, or the reported number is chosen on its own test data and is an
         # optimistic bound rather than a measurement.
-        if len(eps) < 3:
+        # `--holdout` sizes BOTH the validation and the test set. One episode each was
+        # the old hardcoded behaviour and is fine for a four-episode dataset; on a few
+        # hundred simulated episodes it reports a test RMSE from a single trajectory,
+        # which is a sample of one dressed as a measurement.
+        h = max(1, int(args.holdout))
+        if len(eps) < 2 * h + 1:
             raise SystemExit(
-                f"{len(eps)} episodes cannot give train/val/test; use "
+                f"{len(eps)} episodes cannot give train + {h} val + {h} test; use "
                 "--temporal-holdout for a single-episode dataset and report it as the "
-                "weaker claim it is")
-        tr, rest = eps[:-2], eps[-2:]
-        val_eps, te = rest[:1], rest[1:]
+                "weaker claim it is, or lower --holdout")
+        tr, val_eps, te = eps[:-2 * h], eps[-2 * h:-h], eps[-h:]
         base = TransitionDataset(tr, stride=args.stride)
         ds = TransitionDataset(tr + val_eps + te, state_norm=base.state_norm,
                                action_norm=base.action_norm, slot_norm=base.slot_norm,
@@ -200,9 +204,19 @@ def main() -> int:
                 raise SystemExit(
                     f"{name} split is empty at stride {args.stride} — too few observed "
                     "transitions per episode for this prediction step")
-        split = f"{len(tr)} train / 1 val / 1 test episodes"
+        # Counted, not hardcoded. The literal "1 val / 1 test" survived the
+        # holdout fix and recorded "1 test episode" in metrics.json next to
+        # 7,165 test transitions, which is not a number one episode can produce.
+        split = (f"{len(tr)} train / {len(val_eps)} val / {len(te)} test "
+                 "episodes")
 
     print(f"[wm] {len(train_idx)} train / {len(test_idx)} test transitions ({split})")
+    if ds.slot_norm is not None:
+        # Printed because a normaliser is the cheapest possible smoke alarm for a
+        # corrupted dataset, and reading it would have caught 30 blown-up episodes
+        # immediately: slot means in metres should be tenths, and they were 187.9.
+        print(f"[wm] slot normaliser  mean |max| {np.abs(ds.slot_norm.mean).max():.4f}"
+              f"  std range {ds.slot_norm.std.min():.4f}-{ds.slot_norm.std.max():.4f}")
     print(f"[wm] robot {ds.robot_dim}d (velocity carried), action "
           f"{ds.action_norm.mean.shape[0]}d, slots {ds.n_slots}x{ds.slot_dim}")
 
@@ -270,7 +284,16 @@ def main() -> int:
             "members": args.members, "hidden": args.hidden,
             "layers": args.layers, "integrate_velocity": bool(ds.velocity),
             "state_mean": ds.state_norm.mean, "state_std": ds.state_norm.std,
-            "action_mean": ds.action_norm.mean, "action_std": ds.action_norm.std}
+            "action_mean": ds.action_norm.mean, "action_std": ds.action_norm.std,
+            # The slot normaliser was missing, and without it a consumer cannot feed
+            # the model anything: slots were standardised during training, so raw
+            # metres at inference are off by whatever the training mean happened to be.
+            # Nothing caught it because every consumer so far ran with an untrained
+            # model, where the scaling is irrelevant.
+            "slot_mean": (ds.slot_norm.mean if ds.slot_norm is not None else None),
+            "slot_std": (ds.slot_norm.std if ds.slot_norm is not None else None),
+            "slot_labels": list(ds.slot_labels) if ds.slot_labels else None,
+            "n_slots": int(ds.n_slots)}
     # A checkpoint that cannot rebuild its own model is not a checkpoint. Verify here,
     # where the failure is one line from its cause, rather than in a consumer.
     from pipeline.world_model.dynamics import DynamicsEnsemble as _DE
@@ -296,16 +319,32 @@ def main() -> int:
     if "model_slot_rmse" in final:
         sid, smd = final["identity_slot_rmse"], final["model_slot_rmse"]
         scv = final.get("constvel_slot_rmse")
+        rel_i = (f"   ({(1 - smd / sid) * 100:+.1f}% vs identity)" if sid > 1e-9
+                 else "   (identity is exact; nothing moved)")
+        rel_v = (f", {(1 - smd / scv) * 100:+.1f}% vs const-vel"
+                 if scv and scv > 1e-9 else "")
         print(f"\n[wm] objects: identity {sid:.5f}"
               + (f"  const-vel {scv:.5f}" if scv else "")
-              + f"  model {smd:.5f}   ({(1 - smd / sid) * 100:+.1f}% vs identity)")
+              + f"  model {smd:.5f}{rel_i[:-1]}{rel_v})" if sid > 1e-9
+              else f"\n[wm] objects: identity {sid:.5f}  model {smd:.5f}{rel_i}")
         if "per_slot_model" in final:
             labels = getattr(ds, "slot_labels", None) or [
                 f"slot {i}" for i in range(len(final["per_slot_model"]))]
             for lab, m_, i_ in zip(labels, final["per_slot_model"],
                                    final["per_slot_identity"]):
-                print(f"       {lab:26} model {m_:.5f}  identity {i_:.5f}  "
-                      f"({(1 - m_ / i_) * 100:+.1f}%)")
+                # A truly static object has identity error exactly zero, and a relative
+                # improvement over zero is undefined rather than infinite. Real tracks
+                # always jitter so this never arose there; a simulated bowl is bolted
+                # down and it does.
+                # 1e-9 was too tight. Simulated objects nobody touches have an
+                # identity error that is tiny but not exactly zero, and dividing by it
+                # printed -34959.8% for a ball that never moved. The threshold is in
+                # standardised units, where 1e-4 is far below any real motion, and for
+                # anything under it the model's error IS its spurious motion — worth
+                # reporting as an absolute number and meaningless as a ratio.
+                rel = (f"({(1 - m_ / i_) * 100:+.1f}%)" if i_ > 1e-4
+                       else f"(static; model invents {m_:.5f} of motion)")
+                print(f"       {lab:26} model {m_:.5f}  identity {i_:.5f}  {rel}")
         if smd >= sid:
             print("       NOTE: worse than assuming objects do not move. The object "
                   "pathway is not learning; do not plan object motion with it.")

@@ -84,11 +84,18 @@ def read_frames(path: Path) -> list[np.ndarray]:
     return out
 
 
-def label_masks(img_rgb, masks, clip_model, preprocess, device, text_feats):
-    """CLIP label per mask, from a tight crop with the background suppressed.
+def mask_text_similarity(img_rgb, masks, clip_model, preprocess, device, text_feats):
+    """(n_masks, n_vocab) CLIP cosine similarities, from background-suppressed crops.
 
     Suppressed rather than left in: a crop of a small cube on a large table is mostly
     table, and CLIP would confidently describe the table.
+
+    Returned as the whole matrix, not as a per-mask argmax, because the two directions
+    disagree and the argmax is the worse one. Measured in the simulator, where the
+    right answer is known: SAM segments the bowl at IoU 0.977 and CLIP still argmaxes
+    that exact mask to "a small dark cube" (0.295 against the bowl prompt's 0.289).
+    Reading the matrix down its columns — for each label, which mask suits it best —
+    recovers the bowl; reading it across rows loses it.
     """
     import torch
     from PIL import Image
@@ -104,14 +111,53 @@ def label_masks(img_rgb, masks, clip_model, preprocess, device, text_feats):
         crop[~sub] = (0.25 * crop[~sub]).astype(np.uint8)
         crops.append(preprocess(Image.fromarray(crop)))
     if not crops:
-        return []
+        return np.zeros((0, text_feats.shape[0]), np.float32)
     with torch.no_grad():
         feats = clip_model.encode_image(torch.stack(crops).to(device)).float()
         feats /= feats.norm(dim=-1, keepdim=True)
         sim = feats @ text_feats.T
-    idx = sim.argmax(-1).cpu().numpy()
-    score = sim.max(-1).values.cpu().numpy()
-    return [(VOCAB[i], float(s)) for i, s in zip(idx, score)]
+    return sim.cpu().numpy()
+
+
+def label_probabilities(img_rgb, masks, clip_model, preprocess, device, text_feats,
+                        logit_scale: float = 100.0):
+    """(n_masks, n_vocab) probabilities — the COLUMN-wise read, and the correct one.
+
+    Softmax across the vocabulary at CLIP's own logit scale. The raw cosine
+    similarities sit in a narrow 0.21-0.32 band whatever the crop is, so a threshold on
+    them is a threshold on nothing; the softmax turns "which prompt fits best, and by
+    how much" into a number a threshold can use.
+
+    Read this down its columns — for each label, which mask suits it — rather than
+    across its rows. Measured in the simulator where the answer is known: SAM segments
+    the bowl at IoU 0.977 and the row-wise argmax of that same mask is "a small dark
+    cube". A label is a claim about a mask; a mask is not a claim about a label.
+    """
+    sim = mask_text_similarity(img_rgb, masks, clip_model, preprocess, device,
+                               text_feats)
+    if not len(sim):
+        return sim
+    z = np.exp(logit_scale * (sim - sim.max(-1, keepdims=True)))
+    return z / z.sum(-1, keepdims=True)
+
+
+def label_masks(img_rgb, masks, clip_model, preprocess, device, text_feats,
+                vocab=None):
+    """Best label per mask. The row-wise read, kept for callers that want it.
+
+    Prefer `label_probabilities` — this loses a correctly-segmented object whenever its
+    own best prompt happens to be another object's.
+    """
+    sim = mask_text_similarity(img_rgb, masks, clip_model, preprocess, device,
+                               text_feats)
+    if not len(sim):
+        return []
+    # `vocab` must be the list the text features were encoded from; defaulting to the
+    # module list keeps every existing caller unchanged, and the sim passes its own
+    # because its arm is grey rather than orange.
+    words = VOCAB if vocab is None else vocab
+    idx = sim.argmax(-1)
+    return [(words[i], float(sim[r, i])) for r, i in enumerate(idx)]
 
 
 def main() -> int:
@@ -132,6 +178,21 @@ def main() -> int:
     ap.add_argument("--max-area-frac", type=float, default=0.25,
                     help="drop masks larger than this fraction of the image: the table "
                          "and background are segmented too and are not objects")
+    ap.add_argument("--label-read", default="row", choices=("row", "column"),
+                    help="how to read the CLIP similarity matrix. MEASURED, and the "
+                         "answer differs by dataset, which is why this is a flag and "
+                         "not a fix: 'column' (for each label, the best mask) is "
+                         "clearly right in simulation, where it recovers a bowl "
+                         "segmented at IoU 0.977 that the row-wise argmax assigns to "
+                         "'a small dark cube'. On the real video it REGRESSES — the "
+                         "arm is orange, wins the bowl prompt, and the static bowl's "
+                         "track travels 0.68-0.73 normalised units. The difference is "
+                         "whether the competing label is something we want: in sim it "
+                         "is another tracked object, on real video it is the arm.")
+    ap.add_argument("--min-prob", type=float, default=0.25,
+                    help="minimum P(label | mask) under the column-wise read; a "
+                         "threshold on raw cosine similarity would be meaningless, "
+                         "since those sit in a 0.21-0.32 band whatever the crop is")
     ap.add_argument("--gate", type=float, default=0.18,
                     help="max normalised image distance a keyframe re-anchor may move "
                          "an existing track; beyond it the detection is a different "
@@ -198,7 +259,16 @@ def main() -> int:
                 raw = gen.generate(rgb)
                 cand = [m["segmentation"] for m in raw
                         if args.min_area <= m["area"] <= args.max_area_frac * H * W]
-                labels = label_masks(rgb, cand, clip_model, preprocess, acc.device, tf)
+                prob = label_probabilities(rgb, cand, clip_model, preprocess,
+                                           acc.device, tf)
+                if args.label_read == "row":
+                    # Keep only each mask's OWN best prompt. Measured to be the right
+                    # default here and the wrong one in simulation — see the note on
+                    # --label-read.
+                    keep_row = prob.argmax(-1)
+                    mask_ok = np.array([VOCAB[i] in KEEP for i in keep_row])
+                else:
+                    mask_ok = np.ones(len(cand), bool)
                 # Associate by LABEL AND POSITION, not by label argmax alone.
                 #
                 # The arm is orange and CLIP happily calls it "an orange plastic bowl",
@@ -208,21 +278,59 @@ def main() -> int:
                 # arm. Requiring a re-anchor to be near where the track already is fixes
                 # it for the same reason `InstanceRegistry` associates by IoU in 3-D —
                 # objects do not teleport between observations.
+                #
+                # Scored down the COLUMNS: every mask is considered for every label we
+                # want, rather than only the masks whose own best prompt happens to be
+                # one of them. The row-wise version discarded a correctly-segmented
+                # object outright whenever CLIP's argmax for it landed elsewhere, which
+                # is a near-tie away at these similarity margins.
+                # Which masks are something we are NOT looking for. Reading down the
+                # columns alone regressed the real data badly: the arm is orange, so
+                # asking "which mask best suits 'an orange plastic bowl'" lets an arm
+                # mask win, and the bowl's track travelled 0.68-0.73 in normalised
+                # units for an object that never moves.
+                #
+                # The sim failure and the real failure have different shapes, and this
+                # separates them. In the sim the competing label was "a small dark
+                # cube" — also an object we want — so the column read is right there.
+                # On the real video the competitor is "an orange robotic arm", which we
+                # do not want at all, and a mask that CLIP thinks is mostly arm should
+                # never be handed to the bowl however well it scores on the bowl prompt.
+                other = [i for i, w in enumerate(VOCAB) if w not in KEEP]
+                dominated = prob[:, other].max(-1) if other else np.zeros(len(cand))
+
                 best: dict[str, tuple[float, np.ndarray]] = {}
-                for m, (lab, sc) in zip(cand, labels):
-                    if lab not in KEEP:
-                        continue
-                    ys, xs = np.nonzero(m)
-                    cx, cy = xs.mean() / W, ys.mean() / H
-                    if lab in tracks and pts.get(lab) is not None:
-                        p_now = pts[lab]
-                        d = float(np.hypot(p_now[:, 0].mean() / W - cx,
-                                           p_now[:, 1].mean() / H - cy))
-                        if d > args.gate:
-                            continue                     # too far to be the same object
-                        sc = sc - d                      # prefer the nearer candidate
-                    if sc > best.get(lab, (-1e9, None))[0]:
-                        best[lab] = (sc, m)
+                for lab in KEEP:
+                    col = VOCAB.index(lab)
+                    for mi, m in enumerate(cand):
+                        if not mask_ok[mi]:
+                            continue
+                        if args.label_read == "row" and VOCAB[
+                                int(prob[mi].argmax())] != lab:
+                            continue
+                        sc = float(prob[mi, col])
+                        if sc < args.min_prob or sc < dominated[mi]:
+                            continue
+                        ys, xs = np.nonzero(m)
+                        cx, cy = xs.mean() / W, ys.mean() / H
+                        if lab in tracks and pts.get(lab) is not None:
+                            p_now = pts[lab]
+                            d = float(np.hypot(p_now[:, 0].mean() / W - cx,
+                                               p_now[:, 1].mean() / H - cy))
+                            if d > args.gate:
+                                continue                 # too far to be the same object
+                            sc = sc - d                  # prefer the nearer candidate
+                        if sc > best.get(lab, (-1e9, None))[0]:
+                            best[lab] = (sc, m)
+                # One mask cannot serve two labels. Resolved by score so the more
+                # confident claim wins, rather than by dictionary order.
+                claimed: dict[int, str] = {}
+                for lab, (sc, m) in sorted(best.items(), key=lambda kv: -kv[1][0]):
+                    key = int(m.sum()) * 1000003 + int(np.flatnonzero(m.ravel())[0])
+                    if key in claimed:
+                        del best[lab]
+                    else:
+                        claimed[key] = lab
                 for lab, (_, m) in best.items():
                     ys, xs = np.nonzero(m)
                     if lab not in tracks:

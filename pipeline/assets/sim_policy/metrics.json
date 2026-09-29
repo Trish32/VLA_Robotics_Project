@@ -1,0 +1,8 @@
+{
+ "held_out_chunk_mse": 0.0029243528842926025,
+ "zero_action_mse": 0.18214696645736694,
+ "train_frames": 60783,
+ "test_frames": 7149,
+ "test_episodes": 40,
+ "horizon": 8
+}

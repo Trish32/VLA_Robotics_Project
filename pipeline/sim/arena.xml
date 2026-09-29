@@ -1,0 +1,207 @@
+<!--
+  cube-to-bowl arena — a deliberately small pick-and-place scene.
+
+  Mirrors the real `cube_to_bowl_5` demonstrations the rest of the repo is fitted to:
+  a dark cube on a table, an orange bowl to put it in, a distractor ball that must be
+  left alone. Matching the real task matters because the same perception stack (SAM +
+  CLIP, the same text prompts) has to read both, and because the sim exists to supply
+  the thing the real data cannot — unlimited episodes with ground-truth depth, metric
+  object poses and per-instance masks.
+
+  The arm is a polar 3-link chain (see arm.py for why). Link lengths here are the
+  source the IK duplicates; tests/test_sim_arm.py parses this file and asserts they
+  still agree.
+
+  Contact settings are the fiddly part of any grasp: `cone="elliptic"` with a high
+  `impratio` stops a squeezed cube from creeping out of the fingers under tangential
+  load, which the default pyramidal cone allows at these force scales.
+-->
+<mujoco model="cube_to_bowl">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002" integrator="implicitfast" cone="elliptic" impratio="10"/>
+
+  <visual>
+    <headlight ambient="0.35 0.35 0.35" diffuse="0.5 0.5 0.5" specular="0.1 0.1 0.1"/>
+    <map znear="0.02" zfar="6"/>
+    <quality shadowsize="2048"/>
+  </visual>
+
+  <default>
+    <!-- Contact softness for the whole arena. MuJoCo's default is 0.02; the free
+         objects here used to be set to 0.006, i.e. deliberately STIFFER, and that is
+         what launched the cube. A 4-11 mm penetration is routine because the arm's
+         position servos are strong, and at a 6 ms time constant the solver resolves one
+         with an impulse that took the cube from 0.7 m/s to 83 m/s in a single step.
+         Measured over 2000 plan-randomised episodes: 5.5% of episodes blew up at the
+         old setting and 0.5% at this one, an 11x reduction, with task success UP
+         (75.5% -> 77.5%). Not zero — the SANE_POSITION_M guard in collect.py is still
+         load-bearing. The pad class overrides back to 0.006 because that value is what
+         stops a rigid pinch jittering. See bug_log.txt [S17]. -->
+    <geom solref="0.03 1"/>
+    <default class="link">
+      <geom type="capsule" size="0.022" rgba="0.72 0.73 0.76 1" density="700"
+            condim="3" friction="0.7 0.01 0.0001"/>
+      <joint type="hinge" axis="0 -1 0" damping="3" armature="0.02"/>
+    </default>
+    <default class="pad">
+      <!-- High friction and a soft, slow contact: a rigid high-gain pinch on a rigid
+           cube jitters, and the jitter is what launches the cube out of the gripper. -->
+      <geom type="box" rgba="0.15 0.15 0.17 1" density="1200" condim="4"
+            friction="1.6 0.02 0.001" solimp="0.95 0.99 0.001" solref="0.006 1"/>
+    </default>
+    <default class="wall">
+      <geom type="box" rgba="0.89 0.42 0.12 1" condim="3" friction="0.6 0.01 0.0001"/>
+    </default>
+  </default>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.24 0.26 0.29"
+             rgb2="0.29 0.31 0.34" width="300" height="300"/>
+    <material name="grid" texture="grid" texrepeat="6 6" reflectance="0.05"/>
+    <material name="table" rgba="0.82 0.78 0.71 1" reflectance="0.02"/>
+  </asset>
+
+  <worldbody>
+    <light name="key" pos="0.4 0.3 1.6" dir="-0.2 -0.2 -1" directional="true"
+           diffuse="0.6 0.6 0.6" specular="0.15 0.15 0.15"/>
+    <light name="fill" pos="0.2 -0.6 1.1" dir="0 0.5 -1" directional="true"
+           diffuse="0.25 0.25 0.27"/>
+
+    <geom name="floor" type="plane" size="3 3 0.05" pos="0 0 -0.4" material="grid"/>
+    <geom name="table" type="box" size="0.42 0.42 0.02" pos="0.28 0 -0.02"
+          material="table" condim="3" friction="0.8 0.01 0.0001"/>
+
+    <camera name="front" pos="0.90 0.0 0.50" xyaxes="0 1 0  -0.613 0 0.790"/>
+    <camera name="overhead" pos="0.32 0.0 0.78" xyaxes="0 -1 0  1 0 0"/>
+
+    <!-- ── arm ───────────────────────────────────────────────────────────────── -->
+    <body name="pedestal" pos="0 0 0">
+      <!-- Ends at z=0.26, exactly where yaw_link begins. Overlapping them by even a
+           centimetre puts a permanently-penetrating contact between two coaxial
+           cylinders, whose friction torque silently locks the yaw axis. -->
+      <geom name="pedestal" type="cylinder" size="0.055 0.13" pos="0 0 0.13"
+            rgba="0.34 0.36 0.40 1"/>
+      <body name="yaw_link" pos="0 0 0.28">
+        <joint name="base_yaw" type="hinge" axis="0 0 1" range="-1.2 1.2"
+               damping="4" armature="0.03"/>
+        <geom name="yaw_link" type="cylinder" size="0.048 0.04" pos="0 0 0.02"
+              rgba="0.30 0.32 0.36 1" density="700"/>
+        <body name="upper_arm" pos="0 0 0.04">
+          <joint name="shoulder" class="link" range="-1.6 1.6"/>
+          <geom name="upper_arm" class="link" fromto="0 0 0  0.26 0 0"/>
+          <body name="forearm" pos="0.26 0 0">
+            <joint name="elbow" class="link" range="-2.6 2.6"/>
+            <geom name="forearm" class="link" fromto="0 0 0  0.24 0 0" size="0.019"/>
+            <body name="wrist" pos="0.24 0 0">
+              <joint name="wrist" class="link" range="-2.4 2.4" damping="1.5"
+                     armature="0.01"/>
+              <geom name="palm" type="box" size="0.028 0.030 0.016" pos="0.028 0 0"
+                    rgba="0.55 0.57 0.61 1" density="900" condim="3"/>
+              <!-- Looks along the gripper axis, 4 cm behind the fingertips. The one
+                   camera in the scene that moves, so the perception path is exercised
+                   under a changing view rather than a fixed one. -->
+              <camera name="wrist" pos="-0.02 0 0.05" xyaxes="0 -1 0  0.94 0 0.34"/>
+              <body name="finger_left" pos="0.056 0 0">
+                <joint name="finger_left" type="slide" axis="0 1 0" range="0 0.05"
+                       damping="8" armature="0.005"/>
+                <geom name="finger_left" class="pad"
+                      size="0.027 0.006 0.013" pos="0.027 0 0"/>
+              </body>
+              <body name="finger_right" pos="0.056 0 0">
+                <joint name="finger_right" type="slide" axis="0 -1 0" range="0 0.05"
+                       damping="8" armature="0.005"/>
+                <geom name="finger_right" class="pad"
+                      size="0.027 0.006 0.013" pos="0.027 0 0"/>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+
+    <!-- ── task objects ──────────────────────────────────────────────────────── -->
+    <body name="cube" pos="0.34 -0.14 0.024">
+      <freejoint name="cube"/>
+      <geom name="cube" type="box" size="0.024 0.024 0.024" rgba="0.13 0.14 0.18 1"
+            density="520" condim="4" friction="1.0 0.01 0.0001"
+            solimp="0.95 0.99 0.001"/>
+    </body>
+
+    <!-- Distractor. Present in the real demonstrations and never part of the task;
+         it is here so a policy or a scorer that confuses "an object moved" with
+         "the task progressed" is caught. -->
+    <body name="ball" pos="0.24 0.19 0.026">
+      <freejoint name="ball"/>
+      <geom name="ball" type="sphere" size="0.026" rgba="0.24 0.64 0.28 1"
+            density="380" condim="4" friction="0.9 0.01 0.0001"/>
+    </body>
+
+    <!-- Open-top bowl: 12 wall segments flared 30 degrees from a 58 mm base to an
+         88 mm rim, so the silhouette actually reads as a bowl. It used to be eight
+         UPRIGHT boxes, and that was not a cosmetic shortcut — an open-vocabulary
+         detector scored "a ring of orange blocks" at 0.460 against "an orange plastic
+         bowl" at 0.003 on the old shape, and the perception numbers were largely
+         measuring that. See bug_log.txt [S11]. Generated by scratchpad/genbowl.py;
+         quaternions rather than euler so the tilt-then-rotate order is unambiguous.
+         Static: the bowl is the goal, and a goal that can be nudged across the table
+         turns a success test into a moving target. -->
+    <body name="bowl" pos="0.36 0.16 0">
+      <geom name="bowl_base" type="cylinder" size="0.060 0.004" pos="0 0 0.004"
+            rgba="0.89 0.42 0.12 1" condim="3" friction="0.7 0.01 0.0001"/>
+      <geom name="bowl_w0" class="wall" size="0.004 0.023 0.03"
+            pos="0.07300 0.00000 0.03400" quat="0.965967 0.000000 0.258664 0.000000"/>
+      <geom name="bowl_w1" class="wall" size="0.004 0.023 0.03"
+            pos="0.06322 0.03650 0.03400" quat="0.933053 -0.066947 0.249851 0.250011"/>
+      <geom name="bowl_w2" class="wall" size="0.004 0.023 0.03"
+            pos="0.03650 0.06322 0.03400" quat="0.836552 -0.129332 0.224010 0.482984"/>
+      <geom name="bowl_w3" class="wall" size="0.004 0.023 0.03"
+            pos="0.00000 0.07300 0.03400" quat="0.683042 -0.182903 0.182903 0.683042"/>
+      <geom name="bowl_w4" class="wall" size="0.004 0.023 0.03"
+            pos="-0.03650 0.06322 0.03400" quat="0.482984 -0.224010 0.129332 0.836552"/>
+      <geom name="bowl_w5" class="wall" size="0.004 0.023 0.03"
+            pos="-0.06322 0.03650 0.03400" quat="0.250011 -0.249851 0.066947 0.933053"/>
+      <geom name="bowl_w6" class="wall" size="0.004 0.023 0.03"
+            pos="-0.07300 0.00000 0.03400" quat="0.000000 -0.258664 0.000000 0.965967"/>
+      <geom name="bowl_w7" class="wall" size="0.004 0.023 0.03"
+            pos="-0.06322 -0.03650 0.03400" quat="-0.250011 -0.249851 -0.066947 0.933053"/>
+      <geom name="bowl_w8" class="wall" size="0.004 0.023 0.03"
+            pos="-0.03650 -0.06322 0.03400" quat="-0.482984 -0.224010 -0.129332 0.836552"/>
+      <geom name="bowl_w9" class="wall" size="0.004 0.023 0.03"
+            pos="-0.00000 -0.07300 0.03400" quat="0.683042 0.182903 0.182903 -0.683042"/>
+      <geom name="bowl_w10" class="wall" size="0.004 0.023 0.03"
+            pos="0.03650 -0.06322 0.03400" quat="0.836552 0.129332 0.224010 -0.482984"/>
+      <geom name="bowl_w11" class="wall" size="0.004 0.023 0.03"
+            pos="0.06322 -0.03650 0.03400" quat="0.933053 0.066947 0.249851 -0.250011"/>
+    </body>
+  </worldbody>
+
+  <!-- Siblings, so MuJoCo's parent-child filter does not cover them. They never touch
+       at any commanded opening, but an unfiltered pair is one stray command away from
+       two geoms solving against each other instead of the cube. -->
+  <contact>
+    <exclude body1="finger_left" body2="finger_right"/>
+    <!-- `pedestal` carries no joint, so MuJoCo welds it to the world — and the
+         parent-child contact filter does not apply between a world-welded parent and
+         its jointed child. Without this the two base cylinders collide. -->
+    <exclude body1="pedestal" body2="yaw_link"/>
+  </contact>
+
+  <actuator>
+    <!-- Position servos. Gains are sized to the load each joint carries, not uniform:
+         the shoulder holds the whole arm against gravity and the wrist holds only the
+         gripper, so one gain for both either sags at the shoulder or buzzes at the
+         wrist. -->
+    <position name="base_yaw" joint="base_yaw" kp="90" kv="6"
+              ctrlrange="-1.2 1.2" forcerange="-40 40"/>
+    <position name="shoulder" joint="shoulder" kp="320" kv="26"
+              ctrlrange="-1.6 1.6" forcerange="-160 160"/>
+    <position name="elbow" joint="elbow" kp="180" kv="14"
+              ctrlrange="-2.6 2.6" forcerange="-110 110"/>
+    <position name="wrist" joint="wrist" kp="50" kv="4"
+              ctrlrange="-2.4 2.4" forcerange="-30 30"/>
+    <position name="finger_left" joint="finger_left" kp="220" kv="6"
+              ctrlrange="0 0.05" forcerange="-45 45"/>
+    <position name="finger_right" joint="finger_right" kp="220" kv="6"
+              ctrlrange="0 0.05" forcerange="-45 45"/>
+  </actuator>
+</mujoco>

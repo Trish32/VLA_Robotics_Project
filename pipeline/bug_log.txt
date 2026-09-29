@@ -70,3 +70,804 @@ registers against, the 6-DoF pose and the pre-grasp offset inherit the error.
 Nothing downstream can detect it: a room scaled by 0.7 is a perfectly consistent room.
 So `SceneWriter` refuses a non-metric trajectory at the boundary rather than letting it
 propagate, and `slam_server.py` reports `metric` so the boundary has something to check.
+
+
+────────────────────────────────────────────────────────────────────────────────
+MuJoCo pick-and-place arena (`pipeline/sim/`)
+────────────────────────────────────────────────────────────────────────────────
+
+
+[S1] A world-welded base geom silently locked the arm's yaw axis
+-------------------------------------------------------------------------
+Date:        2026-09-27
+Fingerprint: The scripted demonstrator reached, grasped and lifted the cube correctly,
+             then stalled in `transfer` for the whole episode, 0/10 success. The trace
+             was the tell:
+
+               commanded target yaw  -0.577 -> +1.200 (ran to the joint limit)
+               actual tip yaw        -0.577 -> -0.577 (never moved at all)
+               tip radius            0.350  ->  0.439 (followed the command fine)
+
+             So shoulder, elbow and wrist tracked their targets and base_yaw did not.
+             `data.actuator_force[0]` sat pinned at 40 N·m — its forcerange — with zero
+             velocity, which rules out a wiring or indexing error: the actuator was
+             pushing as hard as it could against something.
+
+Ruled out:   actuator/joint name collision; wrong `data.ctrl` index (verified 0..5 map
+             to the six actuators); joint limits (range ±1.2, position -0.58); damping
+             and armature (at 40 N·m and damping 4 it should spin at 10 rad/s).
+
+Cause:       `mj_forward` reported four permanent contacts, `pedestal <-> yaw_link`,
+             each at dist = -0.02 — the two coaxial base cylinders overlapped by 2 cm.
+             MuJoCo's parent-child contact filter did not exclude them because the
+             `pedestal` body carries no joint, so the compiler WELDS it to the world;
+             the exemption for a parent and its child does not apply when the parent is
+             the world body. Four deeply penetrating contacts between coaxial cylinders
+             produce almost no radial force and an enormous friction torque about the
+             shared axis — which is exactly the one axis that stopped moving.
+
+Fix:         Shortened the pedestal to end at z=0.26, where yaw_link begins, and added
+             an explicit `<exclude body1="pedestal" body2="yaw_link"/>`. 0/10 -> 10/10
+             canonical, 39/40 under domain randomisation.
+
+Why it matters: nothing errored and nothing looked wrong in isolation. Three of four
+joints worked, so every plausible hypothesis pointed at the fourth joint's own
+configuration rather than at a contact pair a hundred lines away in the file.
+
+
+[S2] CLIP's per-mask argmax discards a mask segmented at IoU 0.977
+-------------------------------------------------------------------------
+Date:        2026-09-27
+Fingerprint: Perception-derived reward agreed with simulator ground truth on only
+             56.2% of episodes. Every single error was a false negative (fp=0, fn=14)
+             and 13 of 14 read "not observed: an orange plastic bowl".
+
+Ruled out:   SAM segmentation quality — this was the assumed cause and it was wrong.
+             Dumping every mask against the ground-truth bowl showed SAM finds it at
+             IoU 0.977-0.980 on the frames that "failed".
+             Greedy assignment contention — the second hypothesis, also wrong. The bowl
+             mask was not being stolen; it was scoring P(bowl) = 0.144 in its own right.
+             Prompt wording — swept ten bowl phrasings against ground truth. The
+             incumbent "an orange plastic bowl" (19/30 detections, mean IoU 0.781) was
+             statistically tied with the best alternative, "an orange basket" (20/30).
+             The vocabulary is not the lever.
+
+Cause:       `label_masks` read the similarity matrix ACROSS ROWS — for each mask, its
+             best prompt. CLIP's raw cosine similarities on these crops occupy a narrow
+             0.21-0.32 band whatever the crop is, so that argmax is close to arbitrary:
+             the correctly-segmented bowl's own best prompt came out "a small dark
+             cube" (0.295) against the bowl's (0.289). One near-tie, and the object
+             vanishes from the scene.
+
+Fix:         Added `mask_text_similarity`, which returns the whole matrix, and read it
+             DOWN ITS COLUMNS instead — for each label, the mask that best suits it —
+             with a softmax at CLIP's logit scale so a threshold means something, and a
+             greedy resolution so no mask serves two labels. 56.2% -> 62.5%.
+
+Residual:    still 12 false negatives, all the same bowl. The remaining limit is CLIP's
+             zero-shot discrimination on a small, low-texture synthetic object, not the
+             assignment direction and not the prompt. Recorded rather than tuned away.
+             The same weakness is latent in the real-data path — `extract_tracks.py`
+             uses the row-wise read, and the earlier "arm stole the bowl's identity"
+             bug there is the same failure with a different outcome.
+
+Why it matters: the obvious diagnosis (the segmenter is weak) was wrong, and acting on
+it would have meant replacing a component that was performing at IoU 0.98.
+
+
+[S3] `--holdout` was ignored; the test set was one episode
+-------------------------------------------------------------------------
+Date:        2026-09-27
+Fingerprint: `train.py --holdout 28` on 284 episodes printed
+             "282 train / 1 val / 1 test episodes". The reported held-out RMSE came
+             from 170 transitions of a single trajectory.
+Cause:       The three-way split hardcoded `eps[:-2]`, one val, one test — correct for
+             the four-episode real dataset it was written against, and never revisited
+             when the argument was added.
+Fix:         `--holdout` now sizes both the validation and the test set.
+Effect:      test set 170 -> 7,447 transitions; the headline ratio moved from
+             +25.3%/+29.5% to +37.7%/+60.2% vs identity/constant-velocity, so the
+             single-episode number was not merely thin, it was unrepresentative.
+
+
+[S4] Relative improvement divided by an exactly-zero baseline
+-------------------------------------------------------------------------
+Date:        2026-09-27
+Fingerprint: ZeroDivisionError after the results had already printed; then, once
+             guarded at 1e-9, a per-slot line reading "-34959.8%".
+Cause:       Per-slot reporting prints `1 - model/identity`. The simulated bowl is a
+             static body, so its identity error is exactly 0; the ball is never touched,
+             so its identity error is tiny but nonzero. Real tracks always jitter, so
+             neither case could arise on the data the code was written for.
+Fix:         Guard at 1e-4 in standardised units. Below it the object is static, the
+             ratio is meaningless, and what is reported instead is the absolute motion
+             the model invents — which is the number that actually matters there.
+
+
+[S5] The trained checkpoint could not be used, and nothing noticed
+-------------------------------------------------------------------------
+Date:        2026-09-27
+Fingerprint: Found while wiring `loop.py`: `dynamics.pt` stores the state and action
+             normalisers but not the SLOT normaliser.
+Cause:       Slots are standardised during training, so a consumer feeding raw metres
+             offsets every slot input by the training mean. No consumer had noticed
+             because every consumer so far ran with an UNTRAINED model, where the input
+             scaling is irrelevant to the identity-initialised output.
+Fix:         Save `slot_mean`/`slot_std`/`slot_labels`/`n_slots`; `load_dynamics`
+             refuses a checkpoint without them rather than assuming unit scaling.
+
+
+[S6] Domain randomisation at scale 0 was not a no-op
+-------------------------------------------------------------------------
+Date:        2026-09-27
+Fingerprint: `test_dr_scale_zero_leaves_the_model_pristine` failed on `light_diffuse`.
+Cause:       The light randomiser interpolated toward a SCALAR level and wrote it to
+             all three channels, so a coloured light came back as three copies of its
+             own mean even at zero perturbation.
+Fix:         Scale the pristine RGB triple instead of replacing it. Matters because
+             scale 0 is the "no shift" condition every sim-to-sim comparison is
+             measured against; a baseline that quietly recolours the lights is not one.
+
+
+[S7] The closed loop hovered over the cube for an entire episode
+-------------------------------------------------------------------------
+Date:        2026-09-27
+Fingerprint: 0/4 success in the first closed-loop run, every episode burning all 360
+             steps. The arm reached the cube smoothly and correctly and then simply
+             stayed there. Nothing errored, no action was malformed, and the perception
+             error was a healthy 1.24 cm throughout.
+Cause:       `scripted_chunk` saves and restores the waypoint machine's stage around
+             its lookahead — correctly, since interrogating a policy about the next
+             eight steps must not advance it eight steps. But the loop then executed
+             the PLANNED chunk without ever calling `pol.act` on a real observation, so
+             the only thing that ever touched the machine was the lookahead, and the
+             lookahead always put it back. Stage 0 forever.
+Fix:         Advance the machine once per control step on the real observation and
+             discard its action; the executed action still comes from the planner.
+             Driving the stage from reality rather than from the dead-reckoned chunk
+             also means a grasp that slips is noticed, instead of the machine
+             proceeding on the assumption that its own plan worked.
+Effect:      0/4 -> 6/6, then 24/24 at zero policy noise.
+Guarded by:  two tests that have to disagree — `test_lookahead_does_not_advance_the_
+             policy` (the restore is correct) and `test_the_waypoint_machine_advances_
+             during_a_run` (something else must do the advancing). Either alone would
+             have passed while the loop was broken.
+
+
+[S8] "Planning hurts" was confounded until a third arm was added
+-------------------------------------------------------------------------
+Date:        2026-09-27
+Fingerprint: Not a crash — a conclusion that was not yet earned. The plan/no-plan grid
+             showed planning losing at every noise level (100% -> 66.7% at noise 0.004)
+             and losing more the more it intervened, which reads as a clean indictment
+             of the scorer.
+Cause:       The two arms did not differ only in ranking. `perturbed_candidates` builds
+             the candidate set by adding Cartesian jitter to the policy's chunk, so the
+             planning arm also absorbs noise the no-plan arm never sees. The comparison
+             therefore measures (ranking quality) + (cost of the perturbation), and
+             attributes the sum to the scorer.
+Fix:         Added `--pick {best,random,first}` and ran a random-pick arm over the SAME
+             candidate set. At noise 0.004: first 100.0%, random 54.2%, best 66.7%.
+Conclusion:  Both effects are real and opposite. The scorer ranks better than chance
+             (+12.5 points, and it removes the unsafe events) — the world model is
+             doing real work. The candidate set costs 46 points, and ranking wins back
+             only 12. So planning is net negative *as configured*, and the thing to fix
+             is the candidate source, not the scorer: `perturbed_candidates` documents
+             itself as a stand-in for sampling the policy K times, and additive noise
+             makes every candidate but one strictly worse than the policy's own answer.
+
+Why this one is in the log at all: the unconfounded result and the confounded one point
+at different repairs. Acting on the first table would have meant rebuilding the scorer,
+which is the component that was working.
+
+
+[S9] Every observation mixed two timesteps
+-------------------------------------------------------------------------
+Date:        2026-09-27
+Fingerprint: A snapshot/restore test failed on `tip` — and only on `tip` — by 4.3e-4 m,
+             while qpos, qvel, ctrl and the commanded target all restored exactly. The
+             restored value was the *correct* one, which is what made it confusing.
+Cause:       `mj_step` integrates qpos but leaves the derived frames — `xpos`,
+             `geom_xpos`, `xmat` — describing the configuration it started from; they
+             are recomputed at the top of the next forward pass. So `state` (read from
+             qpos) was current while `tip` and `objects` (read from xpos) were one step
+             behind. Restoring and calling `mj_forward` produced fresh frames, and the
+             "drift" was the staleness being removed.
+Impact:      0.43 mm on the tip, against ~12 mm of motion per step — 3.6%. Small, but
+             it sat between a dynamics model's input and its target, and between the
+             policy and the tip it was servoing to.
+Fix:         `mj_forward` at the end of `step()`, before observing. One forward pass.
+Why it hid:  nothing is inconsistent within either timestep, and both are plausible. A
+             test comparing the env against itself would never catch it; this only
+             surfaced because a rewind produced a *different* answer than the forward
+             path for the same qpos.
+
+
+[S10] Oracle@k perturbed the episode it was measuring
+-------------------------------------------------------------------------
+Date:        2026-09-28
+Fingerprint: Two grid cells that must be identical were not. `belief/first` scored
+             15/16 where `action/first` scored 16/16 — but `first` executes the
+             unperturbed policy chunk in both, so the candidate source cannot matter.
+             The only difference between the runs was the diagnostic rollouts, which
+             are supposed to leave no trace whatsoever.
+Cause:       `snapshot` saved a hand-picked set of fields — qpos, qvel, act, ctrl,
+             time. That list looks complete and omits `qacc_warmstart`, the constraint
+             solver's warm start. A contact-rich scene resumed without it takes a
+             different first solver iteration; the difference is far below a micron and
+             compounds chaotically over 200 steps.
+Fix:         `mj_getState`/`mj_setState` with `mjSTATE_INTEGRATION` — MuJoCo's own
+             definition of what integration needs — instead of a hand-picked list.
+Guarded by:  a replay test that runs 60 steps THROUGH A GRASP after a detour that also
+             makes contact, and demands agreement at 1e-12. The earlier version replayed
+             15 contact-free steps and passed with the bug present, which is the whole
+             lesson: a rewind test that avoids contact tests nothing about rewinding.
+Why it matters out of proportion to its size: this is the instrument, not the subject.
+A diagnostic that changes the thing it measures produces numbers that look fine and
+cannot be checked against anything.
+
+
+[S11] The "bowl" is not a bowl, and the perception result was mostly that
+-------------------------------------------------------------------------
+Date:        2026-09-28
+Fingerprint: SAM+CLIP reward agreement stuck at 62.5%, every error a false negative and
+             every false negative the bowl. [S2] fixed the assignment direction and a
+             ten-prompt sweep moved it by one frame in thirty, so the remaining gap was
+             recorded as "CLIP's zero-shot discrimination on a small low-texture
+             synthetic object".
+
+             That explanation was wrong. Replacing CLIP with an open-vocabulary
+             DETECTOR (OWLv2) — which should have been strictly better at localising
+             from text — made the bowl *worse*: best query 4/24 detections against
+             CLIP's 19/30. Meanwhile the same detector found the cube at 0.599 and the
+             ball at 0.874 in the same frames.
+
+             That split is the clue. A cube is a cube and a sphere is a sphere; both are
+             canonical. The bowl is eight upright boxes in a ring.
+
+Cause:       A query sweep with shape-honest phrasings settles it:
+
+               "an orange plastic bowl"     mean 0.003   0/12   boxIoU 0.307
+               "an orange ring"             mean 0.009   0/12   boxIoU 0.111
+               "a ring of orange blocks"    mean 0.460  11/12   boxIoU 0.653
+
+             The detector is not failing. It is correctly describing what is in the
+             image, and the image does not contain a bowl. CLIP scored *better* only
+             because it is a fuzzier matcher — being vaguer made it more forgiving of a
+             label that does not fit.
+
+Conclusion:  the perception gap was largely an ARENA modelling error, not a perception
+             stack weakness, and three rounds of work on the perception stack could not
+             have found it. What found it was a component that was more correct.
+
+Fix:         Rebuilt the bowl as 12 wall segments flared 30 degrees from a 58 mm base
+             to an 88 mm rim (quaternions generated by scratchpad/genbowl.py; euler
+             order is ambiguous enough to be worth avoiding for a compound rotation).
+             No perception code was touched.
+
+               OWLv2, "an orange plastic bowl"   before 0.003, 0/12
+                                                  after 0.367, 9/12
+               OWLv2, "an orange bowl"            after 0.424, 10/12
+
+             A 100x score increase from reshaping the object. The demonstrator is
+             unaffected (39/40 under randomisation), which is the check that the fix
+             changed the appearance and not the task.
+
+             Recorded before the fix as well as after, so the sequence is not rewritten
+             afterwards as though the geometry had always been the suspect. It was the
+             third hypothesis, and the first two were both wrong.
+
+
+[S12] The lookahead spent the policy's own randomness
+-------------------------------------------------------------------------
+Date:        2026-09-28
+Fingerprint: Two grid cells that are identical by construction disagreed — `action/first`
+             16/16 against `belief/first` 15/16. Both execute the unperturbed policy
+             chunk, so the candidate source cannot reach the executed action. [S10] had
+             already fixed one cause of exactly this symptom (an inexact rewind), and
+             the disagreement survived it.
+Cause:       `scripted_chunk` restores the waypoint machine's stage but not its RNG.
+             With action noise on, `act` draws from that RNG on every call, so a
+             lookahead of H steps consumes H draws — and the belief source calls the
+             lookahead K times per decision against the action source's once. The two
+             arms were therefore running different noise realisations of the same
+             policy.
+Fix:         Save and restore `bit_generator.state` alongside the stage. This also makes
+             belief candidates differ by BELIEF alone, which is the only thing they were
+             supposed to vary.
+Guarded by:  a test asserting the generator does not advance across five lookaheads and
+             does advance when the policy acts for real. Both halves matter: freezing it
+             entirely would make the action noise deterministic and silently disable the
+             thing the noise was added to simulate.
+
+Why it recurs in this log: three separate bugs ([S10], [S12], and the frozen stage in
+[S7]) are all the same mistake — deciding what "the state" is by listing the fields that
+came to mind. MuJoCo answers it properly with `mjSTATE_INTEGRATION`; for our own objects
+nothing does, so the rule now is that anything a lookahead touches gets saved, RNGs
+included.
+
+
+[S13] 377 of 380 successful episodes were labelled failures
+-------------------------------------------------------------------------
+Date:        2026-09-28
+Fingerprint: `train_value.py` opened with "380 episodes, 3 successful". The collector
+             only WRITES successful episodes, so the correct figure is 380 of 380. The
+             value head had therefore been fitted to three positive examples in sixty
+             thousand frames — and still reported beating its baselines by ~10%, because
+             predicting approximately zero everywhere is an excellent fit to a column
+             that is approximately always zero.
+Cause:       `next.reward` fired on the POLICY reaching its terminal waypoint stage
+             ("done"), not on the SIMULATOR reporting success. `env.done()` ends the
+             episode the moment `success()` is true, which happens at stage "release",
+             so the machine reaches "done" in roughly 1 episode in 40. The two
+             definitions of "finished" disagreed and the wrong one was recorded.
+Fix:         `reward_column` fires 1.0 on the first frame `env.success()` is true, from
+             a per-frame `solved` flag recorded during the rollout. 3/380 -> 380/380.
+             Fires on the FIRST such frame rather than the last, so a discounted
+             return-to-go does not credit the idle tail after the cube has landed.
+Note:        `train_value.py`'s docstring already claimed the label "comes from the same
+             simulator verdict the loop is scored against rather than from a heuristic
+             applied here". That was the intent and it was not true of the data. The
+             fix makes the sentence accurate rather than deleting it.
+
+Why it survived a review: the column existed, was per-frame, had the right dtype and the
+right shape, and was multiplied by an episode-level success flag that was itself
+correct. Everything about it looked right except how often it was nonzero, and nothing
+downstream read it until the value head did.
+
+
+[S14] An AUC of 0.764 computed from a column of zeros
+-------------------------------------------------------------------------
+Date:        2026-09-28
+Fingerprint: A signal-selection table reported predicted collision volume at AUC 0.764
+             — comfortably the best of five candidate disaster signals, and the basis
+             for redesigning the veto around it. The threshold sweep then fired on zero
+             decisions at every quantile from 0.40 to 0.99, which is impossible for a
+             signal carrying that much information.
+Cause:       The Mann-Whitney AUC broke ties by `np.argsort` order instead of averaging
+             them. Collision was identically **0.0 on all 164 decisions**, so the
+             "ranking" was whatever arbitrary order argsort produced, and where the
+             positives happened to land in it decided the score. The function
+             manufactured a strong predictor out of a column with no variance at all.
+Fix:         Average ranks within ties, which scores a constant signal at exactly 0.500,
+             and print an explicit "(constant — carries no information by construction)"
+             note when a candidate signal has zero range, so the degenerate case is
+             named rather than silently scored.
+Effect:      collision 0.764 -> 0.500. Corrected table: drop 0.353, v_end 0.307,
+             collision 0.500, instability 0.411, spread 0.483 — no signal predicts
+             disaster and three are anti-predictive.
+
+Why collision was constant is the more interesting half, and it is structural rather
+than a bug: the latent carries the cube, the bowl and the ball, and **no gripper**. The
+collision term can therefore only see object-object overlap, which does not occur in an
+8-step horizon during normal operation — while the actual failures in this task are
+gripper-object events. The model cannot represent the thing that goes wrong.
+
+This is the fourth instrument in this sequence to be wrong in the flattering direction
+([S10], [S12], [S13], [S14]). Three were caught by cells that should have been identical
+not being identical; this one by a downstream result contradicting an upstream one. The
+pattern is that a measurement which agrees with what you hoped deserves the same
+scepticism as one that does not.
+
+
+[S15] The fix that was right in simulation was wrong on the real data
+-------------------------------------------------------------------------
+Date:        2026-09-28
+Fingerprint: [S2] established — in the simulator, against ground truth — that reading
+             the CLIP similarity matrix down its COLUMNS beats reading it across its
+             rows: SAM segments the bowl at IoU 0.977 and the row-wise argmax of that
+             exact mask is "a small dark cube". Applying the same change to the real
+             extraction regressed it. The bowl is static and its track travelled:
+
+               row-wise      bowl found in 1 of 5 episodes; travel 0.070 when found
+               column-wise   bowl found in 5 of 5; travel 0.180 / 0.680 / 0.068 / 0.734
+
+Cause:       The two datasets fail differently and the column read only helps one of
+             them. In simulation the label competing for the bowl's mask is "a small
+             dark cube" — another object we want — so considering every mask for every
+             wanted label is exactly right. On the real video the competitor is the
+             **arm**, which is orange, and which we do not want at all; asking "which
+             mask best suits 'an orange plastic bowl'" hands it the arm.
+
+Attempted:   rejecting a mask for a wanted label when an unwanted label dominates it.
+             This helped episode 1 (0.233 -> 0.180) and did nothing for episodes 2 and
+             4 (0.680, 0.734). CLIP does not reliably rate an arm crop as more arm than
+             bowl, so the domination test has nothing to fire on.
+
+Resolution:  `--label-read` is now an explicit flag, defaulting to **row** for the real
+             extraction and **column** in `sim/perception.py`, with the measurement
+             recorded on the flag itself. Not a fix — a documented, measured divergence.
+             Shipping the column read everywhere would have improved a benchmark and
+             degraded the data the project is actually about.
+
+Still open:  neither read produces a usable real-data bowl track. Row-wise loses it;
+             column-wise finds the arm. The identified fix is the one
+             `world_model/reward.py` already uses for exactly this object and exactly
+             this reason — **detect the bowl once, by median over probe frames, and
+             treat it as static rather than tracking it.** A static object does not need
+             a track, and tracking it is what exposes it to being stolen.
+
+The general lesson, which cost a full re-extraction to learn: a fix validated on the
+dataset with ground truth is a hypothesis about the dataset without it, not a result
+there. Verifying on the real path is what caught this, and it is why the real path is
+worth re-running even when the simulated evidence looks decisive.
+
+
+[S16] Thirty launched cubes rewrote the normaliser, and every model downstream
+Symptom:     the audit asked for a slot normaliser sanity check and got
+             |slot_mean|max = 187.9114 metres from `world_model_plans`, on an arena
+             whose table is 1.2 m wide. `world_model_sim`, trained on the same code
+             the same day, read 0.2737.
+
+Fingerprint: per-dataset max absolute object position
+               pick_place_400b / 400c    0.399 m      0 episodes over 2 m
+               plans_500                 9.6e+07 m    30 of 500 episodes over 2 m
+
+Cause:       `--randomise-plans` samples grasp offsets on a ring, and an offset far
+             enough off-centre pinches the cube at a corner between the pads. MuJoCo
+             resolves the resulting interpenetration by ejecting it at enormous
+             velocity. Nothing in the collector rejected the episode, and
+             `--keep-failures` — added deliberately, so the dynamics model would see
+             failures — kept every one of them.
+
+             The damage is not that 6% of episodes are wrong. It is that the loss is
+             standardised by a mean and std computed over all of them, so those 30
+             episodes set the scale for the other 470: every real 12 mm cube motion
+             became ~1e-4 in standardised units and contributed essentially no
+             gradient.
+
+Fix:         `SANE_POSITION_M = 2.0` in `collect.py` — an episode with any object
+             beyond it is discarded at write time and counted in the run's meta, and
+             `train.py` now prints the slot normaliser with an explicit alarm when it
+             exceeds arena scale. Re-collected as `plans_600` (33 of 600 discarded).
+
+Before/after (whole-latent held-out RMSE vs identity, and value vs the distance
+             baseline; both on plan-randomised data):
+               contaminated plans_500   +45.3% dynamics,  0.025241 value MSE
+               clean plans_600          +38.8% dynamics,  0.013159 value MSE
+             The dynamics number *fell*, which is the honest direction: the
+             contaminated split's identity baseline was inflated by the same outliers.
+             The value head improved 48%.
+
+Invalidated: every number read off the `plans_500` checkpoint, specifically the veto
+             AUC table and the plans_500 dynamics/value rows. NOT invalidated: anything
+             computed from `pick_place_400b`/`400c`, and every Oracle@k, reachability,
+             headroom, perception-F1 and rescue-rate figure, which are measured in the
+             simulator or the segmenter and never touch a learned checkpoint.
+
+Found by:    asking whether the conclusions came from the pipeline that actually loads
+             the post-training checkpoint. The check that exposed it — print the
+             normaliser and compare it to the physical scale of the scene — costs one
+             line and would have caught this at training time.
+
+
+[S17] The cube was not launched by the grasp. It was launched by the contact solver
+Symptom:     5.5% of plan-randomised episodes ended with an object past 2 m — and
+             sometimes past 1e11 m. [S16] added a guard that discarded them; this is
+             the root cause underneath that guard.
+
+Fingerprint: one step before the end, |v| of the cube goes from 0.7 m/s to 83 m/s with
+             no change in the commanded action. For several steps before that the cube
+             is 4-5 mm inside the table, pushed there by a finger pad while the arm's
+             position servo keeps driving down.
+
+First hypothesis, REFUTED: off-centre grasps pinch the cube at a corner, so the fix is
+             a tighter `graspable_radius`. Measured over 300 episodes by decomposing
+             each grasp offset into the gripper's own frame (radial = along the pad,
+             tangential = along the closing axis):
+               blow-up rate vs |tangential|  7.9 / 5.0 / 4.7 / 5.4 / 3.3 / 0.0 / 4.8 %
+               blow-up rate vs |radial|      2.9 / 4.8 / 0.0 / 5.0 / 2.4 / 4.3 / 6.0 %
+             Flat in both, and the smallest blowing-up offset was 0.44 mm. The plan is
+             not what distinguishes the episodes that explode. Hypothesis dropped
+             rather than shipped.
+
+Cause:       the free objects carried `solref="0.006 1"` — a 6 ms contact time constant
+             against MuJoCo's 0.02 default, i.e. deliberately *stiffer* than standard —
+             with `solimp` width 1 mm. Penetrations of 4-11 mm are far past that width,
+             so the solver applies its maximum restoring impulse to a 0.5 kg cube in a
+             2 ms step. Deep penetration is routine here (it happens in nearly every
+             episode) because the arm's position actuators are strong; what was rare
+             was the impulse resolving into an ejection rather than a bounce.
+
+Fix:         `solref="0.03 1"` on every geom a free object can strike — cube, ball,
+             table, bowl base and bowl walls. The finger pads keep 0.006, since that
+             value was chosen to stop a rigid pinch jittering and is load-bearing for
+             the grasp.
+
+Before/after (200 plan-randomised episodes per row):
+               baseline  solref 0.006/0.02   11/200 blow-ups (5.5%)   success 75.5%
+               solref 0.03 on free objects    2/200            (1.0%)          74.5%
+               solref 0.03 on ALL contacts    0/200            (0.0%)          77.5%
+             The 0/200 did not hold up at scale. At **2000** episodes the shipped
+             configuration blows up 10 times — **0.5%**, an 11x reduction rather than
+             an elimination, and the SANE_POSITION_M guard stays load-bearing.
+             Success went UP,
+             so this is not a stability-for-fidelity trade. Rejected alternatives:
+             `solver iterations 200` changed nothing (5.5%, reverted per the Debug
+             Rule); `timestep 0.001` removed the blow-ups and destroyed the task
+             (success 75.5% -> 31.0%), because the waypoint machine's dwell counts are
+             in steps, not seconds.
+
+Check:       the demonstrator is unaffected — 10/10 canonical, 40/40 under full domain
+             randomisation (was 39/40). That is the test that separates "changed the
+             numerics" from "changed the task".
+
+Interaction: `--keep-failures` exists so the dynamics sees failures, and it was keeping
+             these. It now cannot: the physics check runs before it, and the two counts
+             are reported separately. A task failure is data; a physics failure is a
+             number that sets the normaliser for every other episode.
+
+
+[S18] A leave-one-out AUC that inverted its own signal
+Symptom:     asked whether ensemble spread and action deviation are better together
+             than alone, the leave-one-episode-out evaluation returned AUC **0.188** for
+             spread — a strong BACKWARDS predictor — where the same signal scores 0.528
+             in sample. Every combination came back below 0.5 as well.
+
+Cause:       the per-fold logistic scores were **pooled into one AUC**. Each fold fits
+             its own intercept, and because the fold excludes exactly one episode, that
+             intercept anti-correlates with the held-out episode's own failure rate:
+             folds that drop a doomed episode see a healthier training set and emit
+             lower logits for it. Pooling then orders decisions by which fold produced
+             them rather than by the signal, and the ordering is backwards. The scores
+             were never on a common scale, so ranking them together was meaningless.
+
+Fix:         compute the AUC **within** each held-out episode and average by pair count,
+             so no two scores from different folds are ever compared. Episodes with no
+             failure or no success contribute no pair and are skipped.
+
+Before/after:
+                                      pooled LOEO     per-episode LOEO
+               spread                    0.188             0.516
+               action_dev                0.329             0.508
+               spread + action_dev       0.314             0.476
+
+Consequence: the corrected numbers change the conclusion rather than tidying it. Within
+             an episode — which is where a veto actually decides — every signal is at
+             chance (0.506-0.516), and combining two does not help (0.476). The pooled
+             AUCs of 0.528-0.587 reported earlier were measuring **between-episode**
+             discrimination: some episodes are doomed overall and run at higher spread.
+             That is not a usable veto signal, because the gate is not asked "is this a
+             bad episode", it is asked "is this the decision to refuse". It also
+             explains, consistently, why the closed-loop veto ablation showed no gain
+             (79.2% vs 80.8% over 120 episodes) and why every bootstrap CI on the net
+             benefit includes zero.
+
+Second time: this is the same class of bug as [S14], where AUC ties broken by sort order
+             manufactured a 0.764 predictor out of a column of zeros. Both times the
+             instrument produced a strong result from no data, and both times the tell
+             was a number too good for the signal it came from.
+
+
+[S19] A completion marker that fired on termination, not on completion
+Symptom:     a 20-minute measurement was reported as finished four seconds after it
+             launched, and the waiting job that depended on it woke up and reported
+             "done" with no result. Asked for the number, there was none: the run had
+             died on an argparse error in under a second.
+
+Cause:       two mistakes that only bite together.
+
+             1. The script ended with an unconditional `echo VETO_GOAL_DONE`. That
+                marker says "this script reached its last line", which is not the same
+                statement as "the work succeeded", and the two diverge exactly when it
+                matters.
+             2. `set -e` did not catch it, because the command was piped:
+                    conda run ... python -m pipeline.sim.calibrate_veto ... | grep -v ...
+                A pipeline's exit status is its LAST command's, so `grep` succeeding
+                masked the Python process exiting 2. Without `set -o pipefail` the
+                shell never saw a failure at all.
+
+             The underlying defect was mine as well: `--signal fail_logit` was added to
+             the recorded columns but never to the argparse `choices`, so the run could
+             not have started.
+
+Fix:         the marker is now emitted only on success, `pipefail` is set so a failure
+             inside a pipeline is visible, and a failure emits its own distinct marker
+             so a waiter can tell "finished" from "died":
+
+                 set -euo pipefail
+                 if <command> | <filter>; then echo TAG_DONE; else echo TAG_FAILED; fi
+
+Rule:        **a completion marker must be bound to the completion of the work, never
+             to the start or the end of the process that was supposed to do it.**
+             A marker that fires on launch ("started"), on reaching the last line, or on
+             any step other than the work's own success is an instrument that reports
+             its own execution rather than the experiment's. The same rule is why
+             `next.reward` had to fire on the simulator's success flag rather than on
+             the policy reaching its terminal stage ([S13]): a proxy for completion
+             drifts from completion precisely in the cases worth knowing about.
+
+Consequence: the measurement itself, once actually run, is in RESULTS.md — a head
+             trained on the failure label scores pooled AUC 0.563 and **within-episode
+             AUC 0.499** against per-decision rewind ground truth, i.e. exactly chance
+             where the gate decides. The wasted time was a few minutes; the risk was
+             reporting "no result" as "no signal", which would have been a fourth
+             withdrawn claim.
+
+
+
+[S20] A deadlock fix that silently redefined the task
+Symptom:     closed-loop success at K=32, same flags, same seeds, same checkpoint:
+                 before   37.5%  [16.7, 58.3]   n=24
+                 after    79.2%  [66.7, 89.6]   n=48
+             Non-overlapping intervals for what was recorded as the same experiment.
+
+Cause:       `ScriptedPickPlace.stage_timeout` was added between the two runs, to break
+             a deadlock in phase-aligned commitment: an off-centre `descend` target sits
+             inside the cube's own footprint, the gripper cannot reach it, the tip never
+             comes within `tolerance`, and the stage never ends.
+
+             It was introduced as a robustness parameter and it is not one. Before it, a
+             stalled stage consumed the rest of the episode; after it, the machine moves
+             on after 120 steps. That is a different task — and it changes fixed-K
+             selection, which was never the reason for adding it, because a longer
+             commitment keeps the arm away from the nominal waypoint for longer and so
+             stalls more often.
+
+             The nominal demonstrator is genuinely unaffected (10/10 canonical, 40/40
+             randomised, p90 stage 53 steps against a 120-step cap), which is exactly
+             what made the change look safe. The check that passed was the check for the
+             wrong thing: it verified the DEMONSTRATOR was unchanged, not that every
+             consumer of the demonstrator was.
+
+Fix:         `loop.task_fingerprint()` hashes everything that defines the task — the
+             demonstrator's speed and dwell constants, the waypoint heights, the arm
+             geometry and the arena XML — and every run records it and prints it. Two
+             numbers are comparable only if their fingerprints match, which is now a
+             property of the files rather than of anyone's memory of when a constant
+             moved.
+
+Rule:        **a constant that changes what the robot does is part of the task
+             definition, not a parameter.** Changing one invalidates every prior
+             measurement that could depend on it, and "could depend on it" is much wider
+             than the reason the change was made. Results from either side of such a
+             change must be re-run or marked NOT COMPARABLE; they may never be put in
+             the same table.
+
+Invalidated: every closed-loop result driven by affordance candidates and measured
+             before this change — the whole commitment sweep, the Oracle@k reachability
+             figures, the domain-gate ablation, the plan-thrash trace, and the first
+             recoverability run. Re-running them under one fingerprint; anything not
+             re-run is marked in RESULTS.md rather than quietly retained.
+
+
+[S21] The comparability check certified two different tasks as the same one
+Symptom:     the re-run K sweep, built specifically to put the whole curve under one
+             task definition after [S20], disagreed with itself:
+
+                 K=16, 48 episodes, oracle selection, same checkpoint, same seeds
+                     18.8%  [ 8.3, 31.2]
+                     83.3%  [72.9, 93.8]
+
+             Both runs printed `task 3de92c99cbe5 — comparable only with runs carrying
+             the same fingerprint`.
+
+Cause:       the two runs differed by `--max-env-steps` (360 vs 480), and
+             `task_fingerprint()` did not read it. The budget was treated as an
+             experiment parameter because it is a CLI flag rather than a module
+             constant, which is a distinction about where a value is typed, not about
+             what it means. How many steps the task gives you is the task.
+
+             The effect is as large as it is because every failure in this arena is a
+             timeout — 100% of failed episodes at K=16/32/64 and both phase modes end
+             at exactly the step cap, and successful K=16 episodes finish at a median
+             of 335 steps against a 360 cap. At that margin the budget is not a bound
+             on the measurement, it IS the measurement.
+
+Fix:         `max_env_steps` is hashed with the rest of the task. The specific error was
+             mine and so was the general one: [S20] built this instrument, and then I
+             fed the new sweep a flag the instrument could not see.
+
+Rule:        **a comparability check that omits a field does not fail silently — it
+             certifies the wrong answer.** An unchecked constant leaves you uncertain;
+             an incomplete check that prints a matching hash removes the uncertainty in
+             the wrong direction, and is worse than no check at all. When adding a
+             fingerprint, enumerate the inputs of the thing being fingerprinted rather
+             than the constants that happen to live nearby — every CLI flag is a
+             candidate, and the test is "does this change what the robot must do",
+             never "is this defined in a module".
+
+Invalidated: the 480-step cells of the re-run K sweep (K=1, 2, 4, 8, 16). Re-run at the
+             360-step budget every other post-[S20] cell already uses.
+
+
+[S22] A comment that asserted comparability instead of checking it
+Symptom:     return drop on the 225 pivotal decisions, scored twice on what was
+             recorded as the same sample:
+
+                 recov3   AUC 0.601  [0.527, 0.672]   excludes chance
+                 piv4     AUC 0.436  [0.343, 0.540]   spans chance, points the other way
+
+             Both runs produced 1052 decisions, 225 pivotal, 95 doomed / 130 fine —
+             identical down to the cell counts, which is what made the disagreement
+             look like a broken measurement rather than two measurements.
+
+Cause:       different world models. `recov3` ran against
+             `world_model_plans/{dynamics,value}.pt` with a failure head; `piv4` ran
+             against `world_model_sim/` with none. The pivotal LABELS agreed exactly
+             because they come from rewinding the simulator and never touch the model
+             — which is precisely why the sample looked identical while every
+             model-derived signal was a different quantity.
+
+             The launcher for the second run carried the line
+
+                 # Same 68 episodes / 6 probes as recov3 so the pivotal set is the
+                 # same one, and only the proxy families are new.
+
+             directly above the flags that made it untrue.
+
+Fix:         re-run on the matching checkpoint. Structurally, the old spread proxy is
+             now printed as a row INSIDE the same table as the new ones, so the
+             baseline and the candidates are always measured by one model in one run
+             and a cross-run comparison is never required to read the result.
+
+Rule:        **a comment asserting two runs are comparable is not a check, and writing
+             one makes the error harder to see rather than easier** — the next reader,
+             including me, spends their attention on the flags the comment drew
+             attention to and not on the ones it did not mention. Comparability is a
+             property of recorded fields ([S20], [S21]); a claim about it belongs in an
+             assertion or a fingerprint, never in prose. Where a baseline and a
+             candidate must be compared, measure them in the same run.
+
+Invalidated: nothing published. `piv4`'s proxy table is internally valid under
+             `world_model_sim` and is retained as such; it may not be read against the
+             `world_model_plans` numbers in RESULTS.md.
+
+
+[S23] Two stages of a cascade composed by multiplying their AUCs
+Symptom:     the run-time pivotal proxy was reported as too weak to gate on, in these
+             words: "a positive effect that currently requires an oracle to locate."
+             The basis was its standalone AUC against the true pivotal label —
+             0.572, later 0.657 for the short-horizon variant — judged against the
+             return-drop stage it would feed.
+
+             Measured as an actual two-stage gate on the same decisions, it is not
+             weak at all:
+
+                 drop alone,        316 fires    +3.2 / 100   [-1.3, +7.9]
+                 proxy -> drop,     158 fires   +12.0 / 100   [+4.8, +19.9]
+                 oracle pivotal,    157 fires   +17.2 / 100   [+6.2, +26.7]
+
+             The proxy recovers about 70% of what a perfect pivotal detector would
+             buy, at the same firing rate, and its interval excludes zero where the
+             single-stage gate's does not.
+
+Cause:       AUC is a ranking summary over a whole population. A cascade is a
+             CONJUNCTION of thresholds evaluated on the same rows, and its yield
+             depends on how the two signals co-vary among the rows actually flagged —
+             which no pair of marginal AUCs contains. Here the two stages are nearly
+             independent (Spearman between proxy and drop: -0.101, -0.085, -0.018),
+             so the conjunction filters far better than either margin suggests.
+
+             The error runs in both directions and the mechanism is the same:
+
+               * PESSIMISTIC, as above — two mediocre, independent signals compose
+                 into a gate stronger than either, because each removes a different
+                 part of the population the other gets wrong.
+               * OPTIMISTIC — two strong but redundant signals compose into one
+                 signal's worth of filtering. Measured here: `range [1/4 H]` and
+                 `std [1/4 H]` score 0.657 and 0.655, and stacking them buys nothing,
+                 because they are Spearman 0.995 with a Jaccard of 0.887 over the
+                 top-30% flagged set. They are the same signal twice, and an AUC
+                 product would have promised a second filter that does not exist.
+
+Fix:         `pipeline/sim/analyse_gate.py` scores the combination end to end — net
+             episode-outcome flips per 100 fires, bootstrapped over episodes — and
+             prints the pairwise Spearman and flagged-set Jaccard alongside, so
+             redundancy is visible in the same table as the yield. No composite is
+             reported that was not measured as a composite.
+
+Rule:        **a cascade must be measured as a cascade.** Per-stage ranking metrics
+             do not compose: they carry no information about correlation between the
+             stages, and correlation is the entire difference between two filters and
+             one. The same applies to any figure of merit summarising a ranking rather
+             than an operating point — AUC, Kendall tau, Spearman. When the deliverable
+             is a decision, measure the decision: fires, rescues, breakages, and an
+             interval over the unit that was resampled.
+
+Consequence: a working run-time veto was declared unreachable and nearly abandoned on
+             the strength of an arithmetic that was never run. This is the inverse of
+             the failure in [S18] and [W4]: those reported a result the data did not
+             support, this refused one the data did support. Both come from trusting a
+             summary statistic in place of the measurement it summarises, and the
+             honest direction of a claim is no guide to whether it needs checking.

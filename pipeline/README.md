@@ -69,6 +69,91 @@ Three results carry the project, each measured and each with its own section in
   measured from the object origin. Caught only by running the node in a live ROS2 graph.
 
 **→ [RESULTS.md](../RESULTS.md)** · **→ [Plan.md](../Plan.md)** for what is not done
+· **→ [EXPERIMENT.md](EXPERIMENT.md)** for what this project claimed and then withdrew
+
+## Closing the loop in simulation
+
+Everything above is open-loop: the stack describes a scene and a planner ranks action
+candidates, but on recorded video nothing it chooses ever happens. **[`sim/`](sim/)** is
+a MuJoCo cube-to-bowl arena where it does — perceive, predict, choose, act, and count
+what happened.
+
+It exists because [world_model/Plan.md](world_model/Plan.md) §1 measured the object
+pathway's failure and blamed the data. The arena supplies that data — episodes at
+~0.03 s each with ground-truth metric object boxes — and the diagnosis held: the same
+architecture that **tied an identity predictor** on two real episodes beats it by
+**39.5%** on 320 simulated ones, and beats constant velocity by 17.3%.
+
+It also makes two things measurable that real demonstrations cannot:
+
+- **segmentation quality**, against ground-truth masks. This found that SAM segments
+  the bowl at IoU 0.977 while CLIP argmaxes that same mask to "a small dark cube" —
+  a failure in how the similarity matrix is read, not in the segmenter;
+- **a perception-derived reward**, scored against the simulator's own verdict: **100%**
+  agreement with ground-truth masks, 62.5% with SAM+CLIP, zero false positives either
+  way.
+
+**There is no robot, so there is no sim-to-real claim here** — domain randomisation
+supports sim-to-sim robustness and nothing stronger. GR00T is not the policy in the
+arena either: its action space is a 29-DoF GR1 humanoid and this arm is a 4-DoF
+Cartesian gripper, so the sim runs a small policy sized to it and GR00T keeps the
+real-data path.
+
+## What the arena measured
+
+The three panels on the [root page](../#what-the-simulator-found) are the exclusions —
+selection has no headroom, and neither perception nor dynamics is the bottleneck. These
+three are the rest of it: what the commitment sweep actually measures, what a learned veto
+buys, and what this project published and then withdrew.
+
+### The commitment curve is two mechanisms, not one
+
+![commitment decomposition](sim/assets/fig5_decomposition.png)
+
+Every failure in this arena is a timeout — no episode ends any other way — so a single
+success-vs-K curve looks like a tuning problem with an optimum near K=32. It is the
+crossing of two curves. Splitting failures by the stage the chunker last committed from:
+low K re-decides so often that it crawls and the clock runs out **mid-carry**, high K fixes
+the grasp offset K steps ahead and never **lifts** the cube. The crossover is at
+**K ≈ 36.5, 95% CI [24.9, 42.6]** — 100% of bootstrap resamples contain a crossing, and it
+is unimodal.
+
+The right-hand panel is on its own axis deliberately. Under commit-once-per-episode, H is
+an open-loop segment rather than a re-decision period, and its "curve" is not one: 88.5 →
+75.0 → 97.9 → 77.1 → 61.5 across H = 32…64. It tracks how often the selector overrode the
+policy (**r = −0.955**) and nothing else. Success given the policy's own chunk was kept is
+flat at **98.3–98.9%** across every H.
+
+### The veto shifts the odds, and 90% of its fires do nothing
+
+![veto anatomy](sim/assets/fig6_veto.png)
+
+The one place the world model is used for what it is measurably good at — predicting
+outcomes rather than discriminating near-identical candidates. A two-stage gate (a
+quarter-horizon plan-spread proxy, then predicted return drop) is scored end to end rather
+than by multiplying the stages' AUCs, which misleads in both directions ([S23]).
+
+Three things a net-flips headline conceals. A veto changes an outcome only where holding
+and executing differ — **181 of 1987 decisions (9.1%)**, replicated from 8.7% at half the
+data — which caps the second stage hard enough that a head fitted on the correct objective
+scores at chance. Conditional breakage is **flat at ~0.045 at every operating point**,
+while conditional rescue runs 0.226 → 0.280 → 0.556 from no gate to the surface median to
+the surface argmax, so the rescue number is largely a statement about where you tuned:
+paired against no gate, the median lift is **+0.054 [−0.044, +0.160]** and spans zero. And
+the harm is not where intuition puts it — firing on a state where every plan works breaks
+it **0.007** [0.001, 0.015] of the time, against **0.261** [0.192, 0.335] on pivotal
+decisions, which is exactly where the gate is built to fire.
+
+### Every claim this project withdrew
+
+![withdrawn claims](sim/assets/fig4_withdrawn.png)
+
+The retractions are the most reusable part of the work: each row is a case where a real
+number belonged to a different claim than the one it was used for, and the mechanism
+recurs. Prose source of record is [EXPERIMENT.md](EXPERIMENT.md); code defects are in
+[bug_log.txt](bug_log.txt).
+
+---
 
 ## The honest limit
 
