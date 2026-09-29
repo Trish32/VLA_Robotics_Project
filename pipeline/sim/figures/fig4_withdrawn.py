@@ -69,6 +69,9 @@ ROWS = [
     ("C3", "caught", "Return drop fails to replicate",
      "0.601 → 0.436, same n", "two different world models",
      "[S22] a comment asserted what it did not check"),
+    ("C4", "caught", "A stage-restricted veto nets +5.5/100",
+     "+5.5 [+2.0, +9.7]", "−0.5 [−3.3, +2.2] held out",
+     "P7/P8/P10 — best of seven stages, registered first"),
 ]
 
 #: Row indices where a horizontal rule and a block label go.

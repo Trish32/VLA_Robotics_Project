@@ -124,25 +124,37 @@ an open-loop segment rather than a re-decision period, and its "curve" is not on
 policy (**r = −0.955**) and nothing else. Success given the policy's own chunk was kept is
 flat at **98.3–98.9%** across every H.
 
-### The veto shifts the odds, and 90% of its fires do nothing
+### The veto cannot be aimed, and the reason is structural
 
 ![veto anatomy](sim/assets/fig6_veto.png)
 
 The one place the world model is used for what it is measurably good at — predicting
-outcomes rather than discriminating near-identical candidates. A two-stage gate (a
-quarter-horizon plan-spread proxy, then predicted return drop) is scored end to end rather
-than by multiplying the stages' AUCs, which misleads in both directions ([S23]).
+outcomes rather than discriminating near-identical candidates. A two-stage gate is scored
+end to end rather than by multiplying the stages' AUCs, which misleads in both directions
+([S23]).
 
-Three things a net-flips headline conceals. A veto changes an outcome only where holding
-and executing differ — **181 of 1987 decisions (9.1%)**, replicated from 8.7% at half the
-data — which caps the second stage hard enough that a head fitted on the correct objective
-scores at chance. Conditional breakage is **flat at ~0.045 at every operating point**,
-while conditional rescue runs 0.226 → 0.280 → 0.556 from no gate to the surface median to
-the surface argmax, so the rescue number is largely a statement about where you tuned:
-paired against no gate, the median lift is **+0.054 [−0.044, +0.160]** and spans zero. And
-the harm is not where intuition puts it — firing on a state where every plan works breaks
-it **0.007** [0.001, 0.015] of the time, against **0.261** [0.192, 0.335] on pivotal
-decisions, which is exactly where the gate is built to fire.
+A veto changes an outcome only where holding and executing differ — **181 of 1987
+decisions (9.1%)**, replicated from 8.7% at half the data — so the other 91% of fires are
+noise in the operator's ear. Everything then turns on whether those 9.1% can be found at
+run time, and they cannot. Three families were tried against the same label:
+**instantaneous** signals top out at **AUC 0.64**; **event triggers** select decisions
+that matter no more than average (every lift ≤1.05× over base, stage change at 0.00×);
+and **change detectors are anti-aligned**, scoring **0.17–0.33** against the start of a
+decisive burst on two independent episode sets — below chance with intervals excluding
+it, which is a stronger statement than "no signal".
+
+The structure is real but unobservable. Decisive decisions are **bursty** — P(decisive |
+previous decisive) is **54.2%** against the 9.1% base, a **5.95×** autocorrelation — so a
+detector that found a burst's edges would be worth having. The mismatch is in the
+objective: the world model was fitted to predict dynamics and return, so its notion of
+"something changed" tracks *motion*, while decisiveness tracks *branch divergence* and is
+measurable only by rewinding to the end of the episode. A cube sliding 2 cm is a large
+state change that decides nothing; a grasp 3 mm off-centre is almost no state change and
+decides everything.
+
+Three standing constraints follow, in [EXPERIMENT.md](EXPERIMENT.md): the decisive set is
+tiny and does not grow with data, the inert fires cannot be filtered out, and decision
+importance is not a run-time attribute of the state.
 
 ### Every claim this project withdrew
 

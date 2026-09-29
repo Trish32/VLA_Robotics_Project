@@ -380,6 +380,75 @@ is supposed to fire. So this is not a precision problem that a better first stag
 fixes; a perfect pivotal detector raises the average yield and leaves the per-fire risk
 untouched.
 
+### Constraint 3 · decisiveness is not a run-time attribute of the state
+
+Constraints 1 and 2 bound how much a veto can do and how cleanly it can be aimed. This
+one says why every attempt to aim it better has failed, and it is the most general of
+the three.
+
+A decision is *decisive* when holding and executing lead to different episode outcomes.
+That is a property of how two branches diverge over the rest of the episode — and the
+only instrument that measures it is rewinding the simulator and running both to the
+end. Nothing observable at the moment of decision predicts it. Three families have been
+tried against the same target, all with episode-bootstrap intervals:
+
+**Instantaneous signals**, scored against the pivotal label:
+
+| signal | AUC |
+|---|---|
+| plan spread, quarter horizon | 0.637 [0.591, 0.681] |
+| state classifier, no rollout | 0.635 [0.588, 0.682] |
+| return drop, on pivotal decisions | 0.601 [0.527, 0.672] |
+| a head fitted on the correct objective | 0.487 [0.386, 0.577] |
+| action deviation | 0.500 [0.395, 0.600] |
+| ensemble spread | 0.405 [0.333, 0.490] — *anti*-predictive |
+
+**Event triggers**, against a 9.1% base rate — none concentrates the signal, and most
+select decisions that matter *less* than average:
+
+| trigger | P(decisive \| fired) | lift |
+|---|---|---|
+| plan-spread jump | 9.5% | 1.05× |
+| approach rate | 8.8% | 0.97× |
+| model surprise | 8.5% | 0.94× |
+| grip change | 8.0% | 0.88× |
+| near-contact | 4.5% | 0.50× |
+| stage change | 0.0% | 0.00× |
+
+**Change detectors**, against the structure of a decisive burst. Decisive decisions are
+genuinely bursty — P(decisive | previous decisive) is **54.2%** against the 9.1% base, a
+**5.95×** autocorrelation, with runs averaging 1.65–1.69 — so a detector that found a
+burst's edges would be worth having. They are anti-aligned instead, reproducibly on two
+independent sets:
+
+| signal | vs burst onset (disc / held-out) | vs burst end (held-out) |
+|---|---|---|
+| model surprise | 0.166 / 0.266 | 0.457 |
+| \|Δ observation\| | 0.180 / 0.268 | 0.556 |
+| \|Δ v0\|, the value head on the latent | — | **0.326** |
+
+The value head registers its largest state change in the *middle* of a burst, and
+surprise and observation-change fire *late* in one. Both are below chance on the wrong
+side with intervals excluding it, which is a stronger statement than "no signal".
+
+**The mechanism is that these measure a different thing.** The world model was fitted to
+predict dynamics and return; its notion of "something changed" tracks *motion*.
+Decisiveness tracks *branch divergence*, and nothing in any training objective here ties
+the two. A cube sliding 2 cm is a large state change and usually decides nothing; a
+grasp offset 3 mm off-centre is almost no state change and decides everything.
+
+What *is* correctly timed is the level signals — `return drop` and `plan spread` fire on
+the burst's first decision in 26–44 of the bursts they catch, at a median lead of
+**exactly 0 steps**. They are coincident indicators, not predictors: they report that a
+decisive stretch has begun, never that one is coming. And they catch only **33–46%** of
+bursts at a useful threshold.
+
+**Reusable form:** *when the label requires a counterfactual, check whether any
+observable tracks it before building machinery that assumes one does.* The check is
+cheap — one AUC against the post-hoc label — and it would have refused the veto's first
+stage, the event triggers, and the state-change gate in an afternoon each. It is also
+the reason a better first stage cannot rescue this: there is nothing for it to read.
+
 ### What the gate does do
 
 Stated plainly because the two constraints above are easy to read as "it does
@@ -396,12 +465,45 @@ fine ones. They are the symmetric pair, and neither is recoverable from a net/10
 
 ### Coarser granularity relocates the problem rather than solving it
 
-A veto asked once per episode faces a denser signal — **39.2% of episodes contain a
-decisive decision against 9.1% of decisions**, a fourfold rise. But 29.2% of episodes
-contain a rescue, 30.0% contain a breakage, and **20.0% contain both**. Two-thirds of
-the episodes worth firing in also contain a decision where firing would do harm, so a
-once-per-episode veto still has to choose *which* decision — and at that granularity it
-has strictly less information to choose with.
+A veto asked at a coarser unit faces a denser signal, and a worse conflict rate with it.
+Measured on real waypoint boundaries rather than on a step-gap proxy — the proxy
+over-segments long stages and flatters the conflict rate by 16 points, so it is reported
+here only as the mistake it was:
+
+| granularity | units | decisive | contains a rescue | contains a breakage | **contains both** |
+|---|---|---|---|---|---|
+| per-decision | 1987 | 9.1% [7.9, 10.4] | 5.4% | 3.7% | — |
+| per-phase, true stages | 498 | 17.5% [14.3, 20.9] | 11.8% | 10.6% | 5.0% |
+| per-episode | 130 | 39.2% [30.8, 47.7] | 29.2% | 30.0% | 20.0% |
+
+The conflict rate — P(a unit contains a breakage | it contains a rescue) — is **42.4%**
+per phase and **68.4%** per episode. Two-thirds of the episodes worth firing in also
+contain a decision where firing does harm, so a coarser veto still has to choose *which*
+decision, with strictly less information to choose with. The density rises; the
+discrimination problem is relocated, not solved.
+
+---
+
+## C4 · "A model-free stage-restricted veto nets +5.5 per 100 fires" — CAUGHT BEFORE PUBLICATION
+
+**Claimed:** splitting veto decisions by waypoint stage gave `transfer` a 3.3:1
+rescue-to-breakage ratio against 1.5:1 pooled, and a veto restricted to it scored
+**+5.5 net flips per 100 fires, 95% CI [+2.0, +9.7]** — clearing zero where the learned
+two-stage gate's interval did not, with no model involved at all.
+
+**Caught by:** P7/P8/P10, registered before the held-out set existed. On 130 fresh
+episodes transfer-only scores **−0.5 [−3.3, +2.2]**, its ratio inverts from 3.27 to
+0.88, and the rank correlation between the two sets' per-stage ratios is **−0.100**.
+
+**What is true instead:** nothing. The ordering was a maximum over seven stages reported
+with the interval of a single measurement. P9 held on both sets — the learned signal
+adds nothing inside a stage — but with the stage effect withdrawn there is no
+restriction left for that to be a statement about.
+
+**Reusable form:** *an interval that excludes zero says nothing about how many intervals
+were computed.* A best-of-k needs held-out data or a correction, and the tell is not in
+the number — it is in how the number was chosen. Same defect as the (q1, q2) surface one
+step earlier; that one was visible in a plot, this one had seven cells and no shape.
 
 ---
 

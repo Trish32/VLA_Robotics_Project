@@ -1,30 +1,36 @@
 #!/usr/bin/env python
-"""Panel 6 — what a learned veto actually does, and what bounds it.
+"""Panel 6 — why the veto cannot be aimed: decisiveness is not a run-time attribute.
 
-The veto is the one place the world model is used for something it is measurably good
-at: predicting outcomes, rather than discriminating between near-identical candidates.
-This panel is the case for it and the case against it on the same page, because a
-net-flips-per-100 headline conceals both.
+A veto changes an outcome only where holding and executing lead to different episode
+outcomes. That is 9.1% of decisions here, and the other 91% of fires are noise in the
+operator's ear. Everything hinges on whether those 9.1% can be found at run time.
 
-Three things a single score cannot show:
+They cannot, and the panel is the case for that being a property of the task rather
+than of any particular signal. Three families were tried against the same label:
 
-  * **most fires do nothing.** A veto only matters where holding and executing lead to
-    different outcomes. That is 9.1% of decisions, and the rest of the fires are inert.
-  * **it does shift the odds.** Conditioned on firing at a doomed action, holding
-    rescues it twice as often under the gate as without one — and the rate at which it
-    breaks a working action does not move.
-  * **the harm is where the gate is supposed to fire.** Firing on a state where every
-    plan works is nearly free; the exposure is concentrated on exactly the pivotal
-    decisions the first stage is built to find.
+  * **instantaneous** — spread, drop, action deviation, a state classifier, and a head
+    fitted on the correct objective. Best of them reaches AUC 0.64.
+  * **event triggers** — surprise, grip change, approach rate, stage change. Every one
+    selects decisions that matter no more than average, several rather less.
+  * **change detectors** — tested against the structure of a decisive burst. These are
+    *anti*-aligned, reproducibly on two independent episode sets, which is a stronger
+    statement than "no signal".
+
+The mechanism is an objective mismatch. The world model was fitted to predict dynamics
+and return, so its notion of "something changed" tracks motion. Decisiveness tracks
+branch divergence, and nothing ties the two: a cube sliding 2 cm is a large state change
+that decides nothing, and a grasp 3 mm off-centre is almost no state change and decides
+everything.
 
     conda run -n simple_bev_vldrive python -m pipeline.sim.figures.fig6_veto \
-        --rows <scratchpad>/piv6.json
+        --rows <scratchpad>/piv7.json --held-out <scratchpad>/piv8.json
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import textwrap
 from pathlib import Path
 
 import numpy as np
@@ -32,28 +38,88 @@ import numpy as np
 from pipeline.sim.figures import theme
 
 
-def boot(num, den, ep, uniq, reps=3000, seed=0):
-    """Rate with a 95% interval resampled over EPISODES, not decisions."""
-    d = int(den.sum())
-    if not d:
-        return float("nan"), float("nan"), float("nan"), 0
-    rng = np.random.default_rng(seed)
-    draws = []
-    for _ in range(reps):
-        pick = rng.choice(uniq, len(uniq), True)
-        idx = np.concatenate([np.where(ep == e)[0] for e in pick])
-        d2 = int(den[idx].sum())
-        if d2:
-            draws.append(num[idx].sum() / d2)
-    lo, hi = np.percentile(draws, [2.5, 97.5])
-    return float(num.sum() / d), float(lo), float(hi), d
+def auc(x, y) -> float:
+    """Mann-Whitney AUC with averaged ranks for ties."""
+    x = np.asarray(x, float)
+    y = np.asarray(y, bool)
+    n1, n0 = int(y.sum()), int((~y).sum())
+    if n1 == 0 or n0 == 0:
+        return float("nan")
+    o = np.argsort(x)
+    xs = x[o]
+    ranks = np.arange(1, len(x) + 1, dtype=float)
+    i = 0
+    while i < len(x):
+        j = i
+        while j + 1 < len(x) and xs[j + 1] == xs[i]:
+            j += 1
+        ranks[i:j + 1] = (i + 1 + j + 1) / 2.0
+        i = j + 1
+    r = np.empty(len(x), float)
+    r[o] = ranks
+    return float((r[y].sum() - n1 * (n1 + 1) / 2.0) / (n1 * n0))
+
+
+def load(path: Path) -> dict:
+    r = json.loads(path.read_text())["rows"]
+    o = np.lexsort(([x["step"] for x in r], [x["episode"] for x in r]))
+    r = [r[i] for i in o]
+    n = len(r)
+    d = dict(
+        n=n,
+        ep=np.array([x["episode"] for x in r]),
+        st=np.array([x["step"] for x in r]),
+        bad=np.array([x["failed"] for x in r], bool),
+        hold=np.array([x["hold_ok"] for x in r], bool),
+        drop=np.array([x["drop"] for x in r], float),
+        spread=np.array([x["spread"] for x in r], float),
+        adev=np.array([x["action_dev"] for x in r], float),
+        v0=np.array([x["v0"] for x in r], float),
+        ve=np.array([x["v_end"] for x in r], float),
+        ps=np.array([x["plan_std"] for x in r], float),
+        sf=np.array([x["state_feat"] for x in r], float),
+        rng=np.array([np.ptp(np.asarray(x["plan_vals_short"], float)) for x in r]),
+    )
+    d["dec"] = (d["bad"] & d["hold"]) | (~d["bad"] & ~d["hold"])
+    # Previous decision, only when it is the immediately preceding probe in the same
+    # episode. Differencing across a gap measures elapsed time, not a change.
+    prv = np.arange(n)
+    okp = np.zeros(n, bool)
+    for i in range(1, n):
+        if d["ep"][i - 1] == d["ep"][i] and d["st"][i] - d["st"][i - 1] <= 2:
+            prv[i], okp[i] = i - 1, True
+    d["prv"], d["okp"] = prv, okp
+    pos = np.zeros(n, int)
+    for i in range(n):
+        if d["dec"][i]:
+            pos[i] = pos[prv[i]] + 1 if (okp[i] and d["dec"][prv[i]]) else 1
+    d["onset"] = d["dec"] & (pos == 1)
+    d["later"] = d["dec"] & (pos > 1)
+    return d
+
+
+def signals(d: dict) -> dict:
+    """Everything a deployed gate could read at the moment of decision."""
+    prv, okp = d["prv"], d["okp"]
+    return {
+        "plan spread ¼-horizon": (d["rng"], "instant"),
+        "return drop": (d["drop"], "instant"),
+        "mean plan value": (-d["ps"], "instant"),
+        "action deviation": (d["adev"], "instant"),
+        "ensemble spread": (d["spread"], "instant"),
+        "model surprise": (np.where(okp, np.abs(d["v0"] - d["ve"][prv]), 0.0), "event"),
+        "|Δ plan spread|": (np.where(okp, np.abs(d["ps"] - d["ps"][prv]), 0.0), "event"),
+        "|Δ observation|": (np.where(okp, np.linalg.norm(d["sf"] - d["sf"][prv],
+                                                         axis=1), 0.0), "event"),
+        "|Δ value head|": (np.where(okp, np.abs(d["v0"] - d["v0"][prv]), 0.0), "event"),
+    }
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--rows", type=Path, required=True)
-    ap.add_argument("--q1", type=float, default=0.70)
-    ap.add_argument("--q2", type=float, default=0.50)
+    ap.add_argument("--held-out", type=Path, default=None)
+    ap.add_argument("--reps", type=int, default=3000)
     ap.add_argument("--out", type=Path,
                     default=Path("pipeline/sim/assets/fig6_veto.png"))
     a = ap.parse_args(argv)
@@ -62,162 +128,164 @@ def main(argv=None) -> int:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    d = json.loads(a.rows.read_text())
-    rows = d["rows"]
-    ep = np.array([r["episode"] for r in rows])
-    uniq = np.unique(ep)
-    bad = np.array([r["failed"] for r in rows], bool)
-    hold = np.array([r["hold_ok"] for r in rows], bool)
-    rec = np.array([r["recoverable"] for r in rows], int)
-    drop = np.array([r["drop"] for r in rows], float)
-    K = max(len(r["plan_vals"]) for r in rows)
-    pivotal = (rec > 0) & (rec < K)
-    allviable = rec == K
-    rng_short = np.array([np.ptp(np.asarray(r["plan_vals_short"], float))
-                          for r in rows])
+    D = load(a.rows)
+    H = load(a.held_out) if a.held_out and a.held_out.exists() else None
 
-    def gate_at(q1, q2):
-        sel = rng_short > np.quantile(rng_short, q1)
-        return sel & (drop > np.quantile(drop[sel], q2))
-
-    def net(f):
-        n_ = int(f.sum())
-        return (100.0 * ((f & bad & hold).sum() - (f & ~bad & ~hold).sum()) / n_
-                if n_ else float("nan"))
-
-    # The operating point is the MEDIAN of the (q1, q2) surface, not a cell chosen for
-    # being large. A two-threshold gate has ~80 usable cells and its argmax is biased
-    # upward by construction: at the max cell the conditional rescue reads 0.556, at
-    # the median 0.280, and only the second is a property of the signal rather than of
-    # the search. The max is drawn alongside so the size of that gap is visible.
-    grid = [(net(gate_at(q1, q2)), q1, q2, int(gate_at(q1, q2).sum()))
-            for q1 in np.round(np.arange(0.10, 0.91, 0.10), 2)
-            for q2 in np.round(np.arange(0.10, 0.91, 0.10), 2)
-            if int(gate_at(q1, q2).sum()) >= 30]
-    grid.sort()
-    med_net, mq1, mq2, _ = grid[len(grid) // 2]
-    max_net, xq1, xq2, _ = grid[-1]
-    a.q1, a.q2 = mq1, mq2
-    fire = gate_at(mq1, mq2)
-    rescue = fire & bad & hold
-    brk = fire & ~bad & ~hold
-    inert_bad = fire & bad & ~hold
-    inert_ok = fire & ~bad & hold
-    n = int(fire.sum())
+    def ci(d, x, y, seed, mask=None):
+        """AUC with an episode bootstrap. `x` and `y` are full-length; `mask` selects
+        the rows scored, and is applied AFTER resampling so each replicate keeps the
+        episode structure rather than a pre-flattened subset."""
+        m = np.ones(d["n"], bool) if mask is None else mask
+        u = np.unique(d["ep"])
+        rng = np.random.default_rng(seed)
+        draws = []
+        for _ in range(a.reps):
+            pick = rng.choice(u, len(u), True)
+            idx = np.concatenate([np.where(d["ep"] == e)[0] for e in pick])
+            idx = idx[m[idx]]
+            if len(idx) < 8:
+                continue
+            yy = y[idx]
+            if yy.sum() == 0 or (~yy).sum() == 0:
+                continue
+            v = auc(x[idx], yy)
+            if not np.isnan(v):
+                draws.append(v)
+        lo, hi = np.percentile(draws, [2.5, 97.5]) if draws else (np.nan,) * 2
+        return auc(x[m], y[m]), lo, hi
 
     theme.use()
-    fig = plt.figure(figsize=(13.2, 5.6))
-    gs = fig.add_gridspec(1, 3, width_ratios=[1.05, 1.0, 1.0], wspace=0.34)
+    fig = plt.figure(figsize=(13.8, 5.8))
+    gs = fig.add_gridspec(1, 3, width_ratios=[0.80, 1.35, 1.05], wspace=0.30)
     axa, axb, axc = (fig.add_subplot(gs[0, i]) for i in range(3))
 
-    # --- a: what is inside the fires --------------------------------------------
-    parts = [("rescue", int(rescue.sum()), theme.GOOD),
-             ("breakage", int(brk.sum()), theme.BAD),
-             ("inert — doomed either way", int(inert_bad.sum()), theme.FAINT),
-             ("inert — fine either way", int(inert_ok.sum()), "#d5d9e0")]
+    # --- a: how little of the stream is decisive --------------------------------
+    dec = D["dec"]
+    n = D["n"]
+    seg = [(f"decisive  ({int(dec.sum())})", int(dec.sum()), theme.BAD),
+           (f"inert  ({n - int(dec.sum())})", n - int(dec.sum()), "#d5d9e0")]
     left = 0.0
-    for lab, v, col in parts:
-        axa.barh([0], [100 * v / n], left=left, color=col, height=0.5,
-                 edgecolor=theme.PAPER, lw=1.0, label=f"{lab}  ({v})")
-        if 100 * v / n > 6:
-            axa.text(left + 50 * v / n, 0, f"{100 * v / n:.0f}%", ha="center",
-                     va="center", fontsize=8.6, color="white"
-                     if col in (theme.GOOD, theme.BAD) else theme.INK,
-                     fontweight="bold")
+    for lab, v, col in seg:
+        axa.barh([0], [100 * v / n], left=left, color=col, height=0.42,
+                 edgecolor=theme.PAPER, lw=1.0, label=lab)
         left += 100 * v / n
-    inert = 100 * (inert_bad.sum() + inert_ok.sum()) / n
+    axa.text(100 * dec.mean() / 2, 0.30, f"{100 * dec.mean():.1f}%", ha="center",
+             va="bottom", fontsize=10, color=theme.BAD, fontweight="bold")
     axa.set_xlim(0, 100)
-    axa.set_ylim(-1.5, 0.55)
+    axa.set_ylim(-1.5, 0.75)
     axa.set_yticks([])
-    axa.set_xlabel("share of fires (%)")
+    axa.set_xlabel("share of all decisions (%)")
     axa.spines["left"].set_visible(False)
-    axa.legend(loc="lower left", frameon=False, ncol=1, fontsize=7.9,
-               handlelength=1.2, borderpad=0.1, labelspacing=0.55)
-    theme.verdict(axa, f"{inert:.0f}% of fires change nothing", theme.MUTED)
-    axa.set_title(f"Anatomy of {n} fires  (surface-median gate)", loc="left")
+    axa.legend(loc="lower left", frameon=False, fontsize=8.0, handlelength=1.2,
+               borderpad=0.1, labelspacing=0.6, ncol=2, columnspacing=1.4)
+    axa.text(0.0, -0.95, "a veto can only change an outcome where holding and\n"
+             "executing lead to different ends", fontsize=7.6, color=theme.FAINT,
+             ha="left", va="top")
+    theme.verdict(axa, "only 9.1% of decisions can be changed", theme.MUTED)
+    axa.set_title(f"What a veto could matter to  (n={n})", loc="left")
 
-    # --- b: the conditional pair, across operating points ------------------------
-    pts = [("every decision\n(no gate)", np.ones(len(rows), bool)),
-           (f"surface MEDIAN\nq1={mq1:g} q2={mq2:g}", fire),
-           (f"surface max\nq1={xq1:g} q2={xq2:g}", gate_at(xq1, xq2))]
-    cells = {}
-    for tag, m in pts:
-        cells[(tag, "rescue")] = boot(m & bad & hold, m & bad, ep, uniq, seed=3)
-        cells[(tag, "breakage")] = boot(m & ~bad & ~hold, m & ~bad, ep, uniq, seed=5)
-    x = np.arange(len(pts))
-    for k, (kind, col) in enumerate((("rescue", theme.GOOD), ("breakage", theme.BAD))):
-        v = [cells[(t, kind)][0] for t, _ in pts]
-        lo = [cells[(t, kind)][0] - cells[(t, kind)][1] for t, _ in pts]
-        hi = [cells[(t, kind)][2] - cells[(t, kind)][0] for t, _ in pts]
-        axb.errorbar(x, v, yerr=[lo, hi], fmt="o", ms=7, color=col, lw=1.4,
-                     capsize=4, label=f"conditional {kind}",
-                     ls="-" if kind == "rescue" else "--", alpha=0.95)
-        for xi, vi in zip(x, v):
-            axb.annotate(f"{vi:.3f}", (xi, vi), textcoords="offset points",
-                         xytext=(0, 11 if kind == "rescue" else -15), ha="center",
-                         fontsize=8.0, color=col, fontweight="bold")
-    axb.axvspan(0.5, 1.5, color=theme.GOOD, alpha=0.06, lw=0)
-    axb.set_xticks(x, [t for t, _ in pts])
-    axb.set_xlim(-0.45, len(pts) - 0.55)
-    axb.set_ylim(-0.04, 0.88)
-    axb.set_ylabel("probability")
-    axb.grid(axis="y", color=theme.FAINT, alpha=0.35, lw=0.6)
+    # --- b: every run-time signal, against the decisive label --------------------
+    sig = signals(D)
+    order = sorted(sig, key=lambda k: auc(sig[k][0], dec))
+    y = np.arange(len(order))
+    for yi, k in zip(y, order):
+        x, fam = sig[k]
+        pt, lo, hi = ci(D, x, dec, 1)
+        col = theme.COOL if fam == "instant" else theme.WARM
+        axb.plot([lo, hi], [yi, yi], color=col, lw=3.2, alpha=0.35,
+                 solid_capstyle="round")
+        axb.plot([pt], [yi], "o", color=col, ms=7.5)
+        if H is not None:
+            hx = signals(H)[k][0]
+            axb.plot([auc(hx, H["dec"])], [yi], "D", color=col, ms=4.6, alpha=0.75)
+    axb.axvline(0.5, color=theme.INK, lw=1.1, alpha=0.6)
+    axb.text(0.5, -0.62, " chance", fontsize=8, color=theme.INK,
+             ha="left", va="bottom")
+    axb.set_yticks(y, order)
+    for tick, k in zip(axb.get_yticklabels(), order):
+        tick.set_fontsize(8.4)
+        tick.set_color(theme.COOL if sig[k][1] == "instant" else theme.WARM)
+    axb.set_xlim(0.30, 0.75)
+    axb.set_ylim(-0.9, len(order) - 0.35)
+    axb.set_xlabel("AUC against the decisive label   (● discovery, ◆ held-out)")
+    axb.grid(axis="x", color=theme.FAINT, alpha=0.35, lw=0.6)
     axb.set_axisbelow(True)
-    axb.legend(loc="upper left", frameon=False, fontsize=8)
-    theme.verdict(axb, "breakage is flat; rescue is where you tune it", theme.MUTED)
-    axb.set_title("What a fire is worth, conditioned", loc="left")
+    axb.spines["left"].set_visible(False)
+    axb.tick_params(axis="y", length=0)
+    theme.verdict(axb, "nothing observable reaches AUC 0.65", theme.MUTED)
+    axb.set_title("Instantaneous (blue) vs event triggers (amber)", loc="left",
+                  pad=12)
 
-    # --- c: where the harm lives ------------------------------------------------
-    strata = [(f"all viable\n(every plan works)", allviable, theme.GOOD),
-              ("PIVOTAL\n(some plans work)", pivotal, theme.BAD)]
-    for i, (lab, m, col) in enumerate(strata):
-        pt, lo, hi, nn = boot(m & ~bad & ~hold, m & ~bad, ep, uniq, seed=7 + i)
-        axc.bar([i], [pt], width=0.5, color=col, alpha=0.85)
-        axc.errorbar([i], [pt], yerr=[[pt - lo], [hi - pt]], fmt="none",
-                     color=theme.INK, lw=1.3, capsize=5)
-        axc.text(i, hi + 0.018, f"{pt:.3f}\n[{lo:.3f}, {hi:.3f}]\nn={nn}",
-                 ha="center", va="bottom", fontsize=8.0, color=theme.INK)
-    axc.set_xticks(range(len(strata)), [s[0] for s in strata])
-    axc.set_ylim(0, 0.46)
-    axc.set_ylabel("P(holding breaks a working action)")
+    # --- c: the burst exists, and the detectors point the wrong way --------------
+    prev_dec = D["okp"] & D["dec"][D["prv"]]
+    p_base = dec.mean()
+    p_cond = dec[prev_dec].mean()
+    axc.bar([0, 1], [100 * p_base, 100 * p_cond], width=0.5,
+            color=[theme.FAINT, theme.BAD], alpha=0.9)
+    axc.text(0, 100 * p_base + 1.8, f"{100 * p_base:.1f}%", ha="center", va="bottom",
+             fontsize=9.5, fontweight="bold", color=theme.MUTED)
+    axc.text(1, 100 * p_cond - 3.5, f"{100 * p_cond:.1f}%", ha="center", va="top",
+             fontsize=11, fontweight="bold", color="white")
+    axc.annotate(f"{p_cond / p_base:.2f}× — decisive\ndecisions arrive in runs",
+                 (1, 100 * p_cond), textcoords="offset points", xytext=(0, 8),
+                 ha="center", fontsize=8.2, color=theme.BAD, fontweight="semibold")
+    axc.set_xticks([0, 1], ["any decision", "previous decision\nwas decisive"])
+    axc.set_ylim(0, 86)
+    axc.set_ylabel("P(this decision is decisive)")
     axc.grid(axis="y", color=theme.FAINT, alpha=0.35, lw=0.6)
     axc.set_axisbelow(True)
-    theme.verdict(axc, "the risk is where the gate is meant to fire", theme.BAD)
-    axc.set_title("Cost of a fire, by state", loc="left")
 
-    dec = int(((bad & hold) | (~bad & ~hold)).sum())
-    # Placed on the FIGURE, not on an axes. theme.caption anchors to axes coordinates,
-    # and this axes is short enough that any offset large enough to clear the legend
-    # also falls off the canvas.
-    import textwrap
+    # The inset carries the punchline: a real burst structure, and detectors that are
+    # anti-aligned with it on both sets.
+    ins = axc.inset_axes([0.075, 0.505, 0.400, 0.400])
+    det = ["model surprise", "|Δ observation|", "|Δ value head|"]
+    m = D["onset"] | D["later"]
+    yy = np.arange(len(det))
+    for yi, k in zip(yy, det):
+        pt, lo, hi = ci(D, signals(D)[k][0], D["onset"], 2, mask=m)
+        ins.plot([lo, hi], [yi, yi], color=theme.WARM, lw=2.6, alpha=0.35,
+                 solid_capstyle="round")
+        ins.plot([pt], [yi], "o", color=theme.WARM, ms=5.5)
+        if H is not None:
+            mh = H["onset"] | H["later"]
+            ins.plot([auc(signals(H)[k][0][mh], H["onset"][mh])], [yi], "D",
+                     color=theme.WARM, ms=4, alpha=0.75)
+    ins.axvline(0.5, color=theme.INK, lw=1.0, alpha=0.6)
+    ins.set_yticks(yy, det, fontsize=6.6)
+    ins.yaxis.tick_right()
+    ins.set_xlim(0.10, 0.68)
+    ins.tick_params(axis="x", labelsize=6.4)
+    ins.tick_params(axis="y", length=0)
+    ins.spines["left"].set_visible(False)
+    ins.set_title("AUC vs burst ONSET\n— below chance on both sets", fontsize=6.9,
+                  color=theme.BAD, loc="left", pad=3)
+    theme.verdict(axc, "the structure is real and unobservable", theme.MUTED)
+    axc.set_title("Decisive decisions are bursty", loc="left")
 
-    fig.text(0.055, 0.145, "\n".join(textwrap.wrap(
+    fig.text(0.035, 0.150, "\n".join(textwrap.wrap(
         f"A veto changes an outcome only where holding and executing differ — "
-        f"{dec} of {len(rows)} decisions ({100 * dec / len(rows):.1f}%), over "
-        f"{len(uniq)} episodes. That fraction is the hard ceiling on the second "
-        f"stage: a head fitted on the correct objective — \u201cis holding better\u201d "
-        f"rather than \u201cwill this fail\u201d — has {dec} examples and scores at "
-        f"chance. The operating point is the median of the {len(grid)}-cell "
-        f"(q1, q2) surface, not its argmax: the rescue rate reads "
-        f"{cells[(pts[2][0], 'rescue')][0]:.3f} at the best cell and "
-        f"{cells[(pts[1][0], 'rescue')][0]:.3f} at the median, and paired against "
-        f"no gate the median lift is +0.054 [\u22120.044, +0.160] \u2014 it spans zero. "
-        f"Conditional breakage does not move at any operating point. Intervals are "
-        f"95% bootstraps over episodes.", 132)),
-        ha="left", va="top", fontsize=8.2, color=theme.MUTED, linespacing=1.5)
+        f"{int(dec.sum())} of {n} decisions ({100 * dec.mean():.1f}%), replicated from "
+        f"8.7% at half the data. No run-time signal finds them: the best reaches AUC "
+        f"0.64, event triggers select decisions that matter no more than average, and "
+        f"the change detectors are ANTI-aligned with the start of a decisive burst on "
+        f"both episode sets — below chance with intervals excluding it, which is a "
+        f"stronger statement than no signal. The mismatch is in the objective: the "
+        f"world model's “something changed” tracks motion, while decisiveness tracks "
+        f"branch divergence and is measurable only by rewinding to the end of the "
+        f"episode. Intervals are 95% bootstraps over episodes.", 150)),
+        ha="left", va="top", fontsize=8.1, color=theme.MUTED, linespacing=1.5)
 
-    fig.subplots_adjust(left=0.055, right=0.985, top=0.80, bottom=0.30)
+    fig.subplots_adjust(left=0.035, right=0.985, top=0.80, bottom=0.30)
     a.out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(a.out, dpi=200)
     print(f"[fig6] -> {a.out}")
-    print(f"      surface median net {med_net:+.1f} at q1={mq1:g} q2={mq2:g}; "
-          f"max {max_net:+.1f} at q1={xq1:g} q2={xq2:g}")
-    print(f"      fires {n}  rescue {int(rescue.sum())}  breakage {int(brk.sum())}  "
-          f"inert {inert:.0f}%   decisive {dec}/{len(rows)}")
-    for t, _ in pts:
-        r, b = cells[(t, "rescue")], cells[(t, "breakage")]
-        print(f"      {t.replace(chr(10), ' '):>34}  rescue {r[0]:.3f} [{r[1]:.3f},{r[2]:.3f}] n={r[3]}"
-              f"   breakage {b[0]:.3f} [{b[1]:.3f},{b[2]:.3f}] n={b[3]}")
+    print(f"      decisive {int(dec.sum())}/{n} = {100 * dec.mean():.1f}%   "
+          f"burst autocorrelation {p_cond / p_base:.2f}x")
+    for k in order:
+        pt, lo, hi = ci(D, sig[k][0], dec, 1)
+        h = (f"  held-out {auc(signals(H)[k][0], H['dec']):.3f}"
+             if H is not None else "")
+        print(f"      {k:>24} {pt:.3f} [{lo:.3f}, {hi:.3f}]{h}")
     return 0
 
 

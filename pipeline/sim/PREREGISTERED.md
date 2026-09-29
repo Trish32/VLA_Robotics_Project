@@ -152,3 +152,103 @@ would have been chosen to explain it.
 That is the third time on this project that an instrument produced a plausible number
 from a broken measurement (bug_log [S14], [S18], [S19]), and the first time one was
 caught before it reached a document.
+
+---
+
+# P7–P10 · The veto's unit is the stage, not the decision
+
+Registered **2026-09-28**, before any held-out episode exists. Discovery set is
+`piv7.json`: 130 episodes at `--seed 0`, 1987 decisions, stage recorded per decision.
+Held-out set will be 130 episodes at `--seed 1`, same checkpoints, same flags, nothing
+else changed. No number below has been computed on the held-out set.
+
+## What was found on the discovery set
+
+Splitting decisions by the demonstrator's waypoint stage gives a sharply non-uniform
+rescue-to-breakage ratio. A veto is worth firing where holding rescues a doomed action
+more often than it breaks a working one:
+
+| stage | decisions | rescue | breakage | ratio |
+|---|---|---|---|---|
+| transfer | 615 | 8.0% | 2.4% | **3.3 : 1** |
+| descend | 474 | 6.1% | 4.9% | 1.2 : 1 |
+| lower | 413 | 5.6% | 6.1% | 0.9 : 1 |
+| lift | 240 | 1.7% | 2.9% | 0.6 : 1 |
+| close | 130 | 0.0% | 0.8% | harm only |
+| release | 39 | 0.0% | 0.0% | never decisive |
+
+Vetoing during `transfer` alone scores **+5.5 net flips per 100 fires, 95% CI
+[+2.0, +9.7]**, against the learned surface-median gate's +3.2 [−0.6, +7.6].
+
+**This is a post-hoc selection over seven stages and is registered as such.** Being
+best of seven is worth about what a one-in-seven maximum is worth, which is why it is
+written down here before being tested rather than reported as a result.
+
+## Predictions
+
+**P7 · transfer-only clears zero on held-out episodes.** A veto restricted to
+`transfer`, with no learned signal at all, scores net flips per 100 fires whose 95%
+episode-bootstrap CI excludes 0.
+
+**P8 · the stage ordering replicates.** Ranking stages by rescue-to-breakage ratio on
+the held-out set puts `transfer` in the top two, and `close` and `release` in the bottom
+two. Spearman between the discovery and held-out per-stage ratios is positive.
+
+**P9 · the learned signal adds nothing inside the stage.** Within `transfer` alone,
+adding the learned gate does not raise conditional rescue: the paired difference
+between transfer-gated and transfer-plus-learned-gate spans 0. If P9 holds, the world
+model is removable from the veto and the gate is a stage lookup.
+
+**P10 · stage-conditional thresholds beat one global threshold.** A gate that loosens
+on `transfer`, disables on `close`/`release`/`lift`, and tightens on `descend`/`lower`
+beats a single global threshold at matched firing rate, paired over episodes, with the
+difference excluding 0.
+
+## What would falsify each
+
+- **P7 fails** if the held-out CI includes 0. Then +5.5 was the one-in-seven maximum
+  and there is no stage effect to exploit.
+- **P8 fails** if `transfer` drops out of the top two, or the rank correlation is not
+  positive. Then the ordering is noise and P10 has nothing to condition on.
+- **P9 fails** if the learned gate *does* raise conditional rescue within `transfer`
+  with the difference excluding 0. That would be the first evidence this session that
+  the world model earns its place in the veto, and it should be reported as such
+  rather than buried — the prediction is written expecting the opposite.
+- **P10 fails** if the paired difference spans 0. Then per-stage tuning is overfitting
+  to six numbers and one global threshold is the honest gate.
+
+**Engagement check, separate from effect size:** the held-out set must contain at least
+400 `transfer` decisions and at least 25 decisive ones there, or P7–P10 are
+underpowered and report "not tested" rather than "not found".
+
+## Outcome — P7, P8 and P10 all failed on held-out episodes
+
+Run 2026-09-28, `--seed 1`, 130 episodes, 1978 decisions. Engagement check passed
+(615 `transfer` decisions against a 400 floor, 45 decisive against 25), so these are
+negatives and not underpowered non-results.
+
+| | discovery | held-out | |
+|---|---|---|---|
+| **P7** transfer-only net/100 | +5.5 [+2.0, +9.7] | **−0.5 [−3.3, +2.2]** | **FAILED** |
+| **P8** transfer rescue:breakage | 3.27 | **0.88**, Spearman −0.100 | **FAILED** |
+| **P9** learned signal inside transfer | +0.073 [−0.066, +0.203] | +0.023 [−0.194, +0.382] | held |
+| **P10** stage-conditional vs global | +2.0 [+0.2, +4.0] | **−1.2 [−3.3, +0.8]** | **FAILED** |
+
+`transfer` does not merely lose its margin — its ratio inverts, from best of seven to
+below parity, and the rank correlation between the two sets' per-stage ratios is
+*negative*. The ordering was noise throughout.
+
+**This is what the registration was for.** +5.5 [+2.0, +9.7] excluded zero, had a
+mechanism ready — transfer has the lowest conditional breakage of any stage, so a veto
+there should be cheap — and would have been written up. Nothing about it looked wrong.
+It was a maximum over seven stages, reported with the interval of a single measurement,
+and the only thing separating it from a result was a prediction committed to before the
+held-out set existed.
+
+It is also the exact failure mode of the (q1, q2) surface one step earlier: a headline
+read off the argmax of a grid. That one was caught by plotting the surface; this one
+needed held-out data, because the grid had seven cells and no shape to inspect.
+
+P9 held, and holds in the same direction on both sets: the world model adds nothing
+detectable inside a stage. That survives only as far as it goes — with the stage effect
+withdrawn, there is no stage restriction left for it to be inside.
