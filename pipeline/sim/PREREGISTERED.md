@@ -252,3 +252,65 @@ needed held-out data, because the grid had seven cells and no shape to inspect.
 P9 held, and holds in the same direction on both sets: the world model adds nothing
 detectable inside a stage. That survives only as far as it goes — with the stage effect
 withdrawn, there is no stage restriction left for it to be inside.
+
+---
+
+# P11–P15 · Constraint 3, as a confirmatory test
+
+Registered **2026-09-28**, before the run exists. Every number in Constraint 3 came from
+`piv7` (seed 0) and `piv8` (seed 1), and `piv8` has since been used three times — for
+P7–P10, for the state-change alignment test, and for the burst-onset test. It is no
+longer held out in any meaningful sense. Constraint 3 is a strong general claim
+("decision importance is not a run-time attribute of the state") assembled from
+exploratory work, so it gets one clean test.
+
+Confirmatory set: **`--seed 2`, 130 episodes**, same checkpoints, same flags, nothing
+else changed. This file is committed before the run is launched. The analysis below is
+fixed in advance and will be run **once**; no threshold, signal or subgroup may be added
+after seeing it.
+
+## Predictions
+
+**P11 · no run-time signal beats AUC 0.65 against the decisive label.** Scored over all
+decisions, episode-bootstrapped: `plan spread ¼-horizon`, `return drop`, `mean plan
+value`, `action deviation`, `ensemble spread`, `model surprise`, `|Δ plan spread|`,
+`|Δ observation|`, `|Δ value head|`. Prediction: **every point estimate < 0.65**.
+
+**P12 · event triggers do not concentrate the decisive signal.** At the 80th and 90th
+percentile of each trigger, P(decisive | fired) divided by the base rate. Prediction:
+**every lift < 1.2×**.
+
+**P13 · change detectors stay anti-aligned with burst onset.** `model surprise`,
+`|Δ observation|` and `|Δ value head|` scored as AUC against burst onset among decisive
+decisions. Prediction: **all three below 0.5**, and at least two with the 95% interval
+excluding 0.5 on the low side.
+
+**P14 · the burst structure replicates.** P(decisive | previous decision decisive)
+divided by the base rate. Prediction: **≥ 3.0×** (measured 5.95× on discovery).
+
+**P15 · the decisive rate replicates.** Prediction: **between 7% and 12%** (8.7% at
+n=68, 9.1% at n=130, 8.2% on `piv8`).
+
+## What would falsify each
+
+- **P11 fails** if any signal reaches 0.65. Constraint 3 is then wrong as stated and the
+  veto's first stage is worth rebuilding around whatever cleared it.
+- **P12 fails** if any trigger concentrates at 1.2× or better. Event-triggering was
+  dismissed on two sets; a third disagreeing means the dismissal was premature.
+- **P13 fails** if the detectors sit at or above chance. The anti-alignment is the
+  strongest claim in Constraint 3 and the one most likely to be a two-set coincidence —
+  it is the prediction I would bet against most readily.
+- **P14 fails** below 3.0×. Then the burst structure was an artefact of probe spacing
+  rather than of the task, and the explanation for why refractory triggering hurts goes
+  with it.
+- **P15 fails** outside 7–12%. Then the decisive rate depends on the seed and
+  Constraint 1's "replicated" wording must be withdrawn.
+
+**Engagement check, separate from effect size:** the run must yield at least 120 decisive
+decisions and at least 40 burst onsets, or P11–P14 report "not tested" rather than
+"confirmed". `piv7` gave 181 and 110.
+
+**Committed in advance:** if P11–P15 all hold, Constraint 3 stands as written and no
+further signal search is warranted on this arena. If P13 alone fails, the anti-alignment
+sentence is struck and the rest survives — the detectors would then be uninformative
+rather than misleading, which is a weaker claim but not a contradictory one.
