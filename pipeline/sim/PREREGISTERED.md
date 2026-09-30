@@ -353,3 +353,151 @@ quantiles — is therefore warranted, and Constraint 3 is amended rather than co
 intervals excluding chance, against 0.166–0.268 before. This was the prediction I
 registered as the one I would bet against most readily. It is now the best-supported
 claim in Constraint 3 and the only part of it tested three times in the same direction.
+
+---
+
+# Audit · the P11–P15 registration was formal, not real
+
+Prompted by the question "did you reach a conclusion first, or make a prediction
+first?". Checked against the git history rather than against memory, and the answer is
+**conclusion first**.
+
+```
+e8f7514  sim: decision importance is not a run-time attribute of the state
+0d3b368  sim: pre-register P11-P15, Constraint 3 as a confirmatory test
+```
+
+Constraint 3 was written into `EXPERIMENT.md` and **pushed** in `e8f7514`. P11–P15 were
+registered in `0d3b368`, *after*. So the claim was already published when its "test" was
+written. That is a confirmation exercise wearing the label of a pre-registration.
+
+**It is worse than the ordering alone.** Every threshold was set from values already
+measured on seeds 0 and 1:
+
+| | registered bar | what had already been observed |
+|---|---|---|
+| P11 | no signal ≥ 0.65 | max 0.637 |
+| P12 | every lift < 1.2× | max 1.05× |
+| P13 | detectors < 0.5 | 0.166–0.268 |
+| P14 | burst lift ≥ 3.0× | 5.95× |
+| P15 | decisive rate 7–12% | 8.7%, 9.1%, 8.2% |
+
+Each bar sits just outside the range already in hand. A prediction that cannot fail
+unless the next seed departs from the last two is a robustness check, and calling it a
+pre-registration overstates what four "holds" are worth. P11, P13, P14 and P15 holding
+is evidence of *stability across seeds* — real, but weaker than presented.
+
+**The one genuinely informative result is the failure.** P12 broke despite its bar being
+drawn from prior data, which is the hardest way for a registered prediction to fail.
+That asymmetry is now the reason to trust it over the four that held.
+
+## The process rule this changes
+
+1. **A registration written after the claim it tests is labelled a ROBUSTNESS CHECK, not
+   a pre-registration.** The distinction is the commit order, and it is checkable.
+2. **A threshold derived from the data being generalised from must be declared as such**,
+   with the observed value printed beside the bar, so a reader can see how much room the
+   prediction had to fail in.
+3. **Registrations are committed before the claim is written into any document**, not
+   after. Where that ordering was not achieved, say so in the registration itself.
+4. Retroactively: P11–P15 are **relabelled a robustness check**. Constraint 3's
+   confirmatory status in `EXPERIMENT.md` is downgraded to match.
+
+---
+
+# P16–P18 · seed 3, registered on VARIANCE rather than on means
+
+Registered **2026-09-29**, before seed 3 exists, and before any claim about trigger
+stability has been written into any document. The quantity being predicted is the
+*spread* across seeds, which is not derivable from the per-seed means already in hand.
+
+Observed on seeds 0/1/2, lift at the 90th percentile:
+
+| trigger | s0 | s1 | s2 | mean | SD | range |
+|---|---|---|---|---|---|---|
+| near-contact | 0.50 | 1.23 | 1.32 | 1.02 | **0.45** | 0.82 |
+| plan spread ¼-H | 1.60 | 1.29 | 1.01 | 1.30 | 0.30 | 0.59 |
+| return drop | 1.10 | 0.80 | 0.50 | 0.80 | 0.30 | 0.60 |
+| \|Δ plan spread\| | 0.99 | 1.11 | 1.32 | 1.14 | 0.17 | 0.33 |
+| \|Δ value head\| | 0.99 | 1.23 | 1.07 | 1.10 | 0.12 | 0.24 |
+| model surprise | 0.94 | 0.99 | 1.07 | 1.00 | 0.07 | 0.13 |
+| \|Δ observation\| | 1.10 | 1.05 | 1.07 | 1.07 | **0.03** | 0.05 |
+
+**P16 · the stability ordering survives a fourth seed.** Recomputing SD over four seeds,
+`near-contact` stays in the top two by spread and `|Δ observation|` stays in the bottom
+two. *Falsified* if either leaves its half of the ranking.
+
+**P17 · the P12 failure does not replicate as a level.** The four-seed mean lift of
+`plan-spread jump` is **below 1.2×**, and the four-seed mean of `near-contact` is below
+1.2×. *Falsified* if either mean is 1.2× or above — which would make the seed-2 result a
+real effect rather than the top of a noisy range, and event-triggering worth building on.
+
+**P18 · two signals are drifting, not scattering.** `plan spread ¼-H` and `return drop`
+fell monotonically across s0→s1→s2 (1.60→1.29→1.01 and 1.10→0.80→0.50). With three
+points that is 1-in-3 by chance each. Prediction: **at least one of the two breaks
+monotonicity on seed 3.** *Falsified* if both continue to fall — which would mean
+something varies with the seed index itself, and every cross-seed comparison in this
+project needs re-examining before anything else is believed.
+
+**Engagement check:** ≥120 decisive decisions and ≥40 burst onsets, else "not tested".
+
+**Declared in advance:** P17's bar of 1.2× is inherited from P12 and is therefore *not*
+independent of prior data. P16 and P18 are about spread and shape, and no threshold in
+either was read off the table above.
+
+---
+
+# P19–P21 · seed 4, the signal inversion at the decision boundary
+
+Registered **2026-09-29**, before seed 4 exists. Motivated by a joint analysis of the
+event triggers and the change detectors that had not been done when P11–P15 was written.
+
+Asking each signal two questions instead of one separates them cleanly:
+
+  **(a)** is this decision decisive?  — over all decisions
+  **(b)** is this the START of the decisive run? — among decisive decisions only
+
+| signal | mean (a) | mean (b) | inverted |
+|---|---|---|---|
+| \|Δ observation\| | 0.524 | **0.225** | 3/3 seeds |
+| \|Δ plan spread\| | 0.537 | **0.232** | 3/3 seeds |
+| \|Δ value head\| | 0.512 | **0.199** | 2/3 seeds |
+| model surprise | 0.496 | **0.221** | 1/3 seeds |
+| plan spread ¼-H | 0.585 | 0.441 | 2/3 |
+| return drop | 0.497 | 0.460 | 1/3 |
+| near-contact | 0.471 | 0.472 | 0/3 |
+
+The change detectors sit at **chance on (a) and ~0.22 on (b)**, on every seed. They carry
+no information about *whether* a decision is decisive, and strong information about
+whether it is the *start* of one — pointing the wrong way. Read forwards that is a
+failure; read backwards it is a usable statement: **when observation change is high, you
+are mid-burst, not at its onset.**
+
+That has a design consequence that has never been tested. Every gate built here fires
+when a signal is HIGH. If the detectors are anti-aligned with onset, the gate that
+catches onsets should fire when they are **LOW**.
+
+**P19 · the inversion replicates.** On seed 4, `|Δ observation|` and `|Δ plan spread|`
+both score **below 0.35** on question (b), with 95% episode-bootstrap intervals
+excluding 0.5. *Falsified* if either reaches 0.35, or if either interval covers chance.
+
+**P20 · the inverted gate beats the forward one at catching onsets.** Fire when
+`|Δ observation|` is below its 30th percentile, versus above its 70th, at matched fire
+count. Prediction: the low-side gate catches **more burst onsets**, and the paired
+difference over resampled episodes **excludes 0**. *Falsified* if the difference spans 0
+or favours the high-side gate — which would mean the inversion is an artefact of
+conditioning on `decisive` and carries no operational content.
+
+**P21 · the inverted gate still does not beat doing nothing on outcomes.** Net episode
+flips per 100 fires for the low-side gate has a 95% interval that **includes 0**.
+*Falsified* if it excludes 0 — which would be the first gate in this project to improve
+outcomes at an operating point chosen in advance, and would reopen the veto entirely.
+
+**Engagement check:** ≥120 decisive and ≥40 onsets, else "not tested".
+
+**Declared in advance:** 0.35 in P19 is a round number below the observed 0.199–0.232 and
+above chance; the 30th/70th percentiles in P20 were not tuned — no split other than
+30/70 has been evaluated on any seed. **P21 is registered expecting to hold**, i.e. I
+expect the inverted gate to find onsets and still not change outcomes, because the
+decisive set is 8% of decisions and holding rescues only ~23% of doomed actions. If P21
+fails, the right response is delight, not a rescue of Constraint 3.
