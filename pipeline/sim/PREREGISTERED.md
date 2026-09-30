@@ -314,3 +314,42 @@ decisions and at least 40 burst onsets, or P11–P14 report "not tested" rather 
 further signal search is warranted on this arena. If P13 alone fails, the anti-alignment
 sentence is struck and the rest survives — the detectors would then be uninformative
 rather than misleading, which is a weaker claim but not a contradictory one.
+
+## Outcome — P11, P13, P14, P15 held; **P12 failed**
+
+Run 2026-09-28 on `--seed 2`, 130 episodes, 2031 decisions. Engagement check passed
+(159 decisive against a 120 floor, 104 burst onsets against 40), so every verdict below
+is a real one. The analysis was run once, exactly as registered.
+
+| | prediction | measured | |
+|---|---|---|---|
+| **P11** | no signal ≥ AUC 0.65 | max **0.566** (plan spread ¼-H) | **holds** |
+| **P12** | every trigger lift < 1.2× | **1.32×** — two triggers | **FAILED** |
+| **P13** | detectors < 0.5, ≥2 excluding | 0.229 / 0.228 / **0.188**, all three excluding | **holds** |
+| **P14** | burst lift ≥ 3.0× | **6.69×** (52.4% vs 7.8% base) | **holds** |
+| **P15** | decisive rate 7–12% | **7.8%** | **holds** |
+
+**P12 is falsified as registered.** At the 90th percentile, `plan-spread jump` reaches
+**1.32×** and `near-contact` reaches **1.32×**, both above the 1.2× line. The registered
+falsifier says this in plain terms: *"Event-triggering was dismissed on two sets; a third
+disagreeing means the dismissal was premature."* It is premature, and the sentence in
+Constraint 3 that event triggers "select decisions that matter no more than average" does
+not survive as written.
+
+What may **not** be done with this result, and is recorded so it cannot be done quietly
+later: `near-contact` scored **0.50×** on `piv7` and **1.32×** here, a reversal across
+seeds, and `plan-spread jump` went 1.05× → 1.32×. That instability is the obvious
+counter-argument and it is exactly the post-hoc reinterpretation the registration exists
+to block. Whether these triggers are unstable noise around 1.0 or a real effect the first
+two sets missed is a **new question**, and it needs its own registration and its own
+seed. It does not settle this one.
+
+**The consequence committed to in advance was:** *"if P11–P15 all hold, Constraint 3
+stands as written and no further signal search is warranted on this arena."* They did
+not all hold. A further search on the P12 axis — trigger-based concentration at tight
+quantiles — is therefore warranted, and Constraint 3 is amended rather than confirmed.
+
+**P13 held, and held harder than on either prior set** — 0.188 to 0.229 with all three
+intervals excluding chance, against 0.166–0.268 before. This was the prediction I
+registered as the one I would bet against most readily. It is now the best-supported
+claim in Constraint 3 and the only part of it tested three times in the same direction.

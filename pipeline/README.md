@@ -134,14 +134,20 @@ end to end rather than by multiplying the stages' AUCs, which misleads in both d
 ([S23]).
 
 A veto changes an outcome only where holding and executing differ — **181 of 1987
-decisions (9.1%)**, replicated from 8.7% at half the data — so the other 91% of fires are
-noise in the operator's ear. Everything then turns on whether those 9.1% can be found at
-run time, and they cannot. Three families were tried against the same label:
-**instantaneous** signals top out at **AUC 0.64**; **event triggers** select decisions
-that matter no more than average (every lift ≤1.05× over base, stage change at 0.00×);
-and **change detectors are anti-aligned**, scoring **0.17–0.33** against the start of a
-decisive burst on two independent episode sets — below chance with intervals excluding
-it, which is a stronger statement than "no signal".
+decisions (9.1%)**, replicated at **7.8%** on a pre-registered confirmatory seed — so the
+other 91% of fires are noise in the operator's ear. Everything then turns on whether
+those 9.1% can be found at run time, and largely they cannot. **Instantaneous** signals
+top out at **AUC 0.566** on the confirmatory set, none reaching the registered 0.65 line.
+**Change detectors are anti-aligned**, scoring **0.19–0.23** against the start of a
+decisive burst with every interval excluding chance — below chance, which is a stronger
+statement than "no signal", and the prediction registered as the one most likely to be a
+coincidence. It held on all three sets.
+
+One registered prediction **failed**: two **event triggers** concentrated the decisive
+signal at **1.32×** against a 1.2× line, where the two exploratory sets had shown no
+trigger above 1.05×. `near-contact` ran 0.50× → 1.32× across seeds, so these may be
+unstable rather than useful — but establishing which needs its own registration, not a
+reinterpretation of the one it just falsified. Event-triggering is open.
 
 The structure is real but unobservable. Decisive decisions are **bursty** — P(decisive |
 previous decisive) is **54.2%** against the 9.1% base, a **5.95×** autocorrelation — so a
@@ -154,7 +160,9 @@ decides everything.
 
 Three standing constraints follow, in [EXPERIMENT.md](EXPERIMENT.md): the decisive set is
 tiny and does not grow with data, the inert fires cannot be filtered out, and decision
-importance is not a run-time attribute of the state.
+importance is largely not a run-time attribute of the state — amended, not confirmed,
+because P12 failed. The registrations and their outcomes are in
+[PREREGISTERED.md](sim/PREREGISTERED.md).
 
 ### Every claim this project withdrew
 

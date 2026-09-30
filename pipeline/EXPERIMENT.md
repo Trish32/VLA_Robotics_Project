@@ -403,8 +403,9 @@ tried against the same target, all with episode-bootstrap intervals:
 | action deviation | 0.500 [0.395, 0.600] |
 | ensemble spread | 0.405 [0.333, 0.490] — *anti*-predictive |
 
-**Event triggers**, against a 9.1% base rate — none concentrates the signal, and most
-select decisions that matter *less* than average:
+**Event triggers**, against a 9.1% base rate. On the two sets this was developed from,
+none concentrated the signal and most selected decisions that mattered *less* than
+average:
 
 | trigger | P(decisive \| fired) | lift |
 |---|---|---|
@@ -414,6 +415,16 @@ select decisions that matter *less* than average:
 | grip change | 8.0% | 0.88× |
 | near-contact | 4.5% | 0.50× |
 | stage change | 0.0% | 0.00× |
+
+**This half is amended, not confirmed.** P12 registered "every trigger lift < 1.2×" and
+a third seed falsified it: `plan-spread jump` and `near-contact` both reach **1.32×** at
+the 90th percentile. The claim that event triggers never concentrate the decisive signal
+does not survive. `near-contact` scored 0.50× on the first set and 1.32× on the third,
+so the honest reading is that these triggers are unstable across seeds rather than
+reliably useless — and which of those it is needs its own registration, not a
+reinterpretation of this one. **Constraint 3's instantaneous and change-detector halves
+are unaffected** (P11 max AUC 0.566, P13 detectors at 0.188–0.229 with all intervals
+excluding chance, both on the same confirmatory seed).
 
 **Change detectors**, against the structure of a decisive burst. Decisive decisions are
 genuinely bursty — P(decisive | previous decisive) is **54.2%** against the 9.1% base, a
@@ -442,6 +453,11 @@ the burst's first decision in 26–44 of the bursts they catch, at a median lead
 **exactly 0 steps**. They are coincident indicators, not predictors: they report that a
 decisive stretch has begun, never that one is coming. And they catch only **33–46%** of
 bursts at a useful threshold.
+
+**Confirmatory status.** P11 (no signal reaches 0.65), P13 (detectors anti-aligned),
+P14 (burst lift 6.69×) and P15 (decisive rate 7.8%) were pre-registered and held on a
+clean third seed. P12 failed. The constraint stands on its instantaneous and
+change-detector evidence; its event-trigger clause is open.
 
 **Reusable form:** *when the label requires a counterfactual, check whether any
 observable tracks it before building machinery that assumes one does.* The check is

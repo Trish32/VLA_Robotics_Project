@@ -118,7 +118,10 @@ def signals(d: dict) -> dict:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--rows", type=Path, required=True)
-    ap.add_argument("--held-out", type=Path, default=None)
+    ap.add_argument("--confirm", type=Path, default=None,
+                    help="the PRE-REGISTERED confirmatory set (P11-P15). Prefer a "
+                         "seed used once over one reused for exploration — a set "
+                         "queried repeatedly is held out in name only.")
     ap.add_argument("--reps", type=int, default=3000)
     ap.add_argument("--out", type=Path,
                     default=Path("pipeline/sim/assets/fig6_veto.png"))
@@ -129,7 +132,7 @@ def main(argv=None) -> int:
     import matplotlib.pyplot as plt
 
     D = load(a.rows)
-    H = load(a.held_out) if a.held_out and a.held_out.exists() else None
+    H = load(a.confirm) if a.confirm and a.confirm.exists() else None
 
     def ci(d, x, y, seed, mask=None):
         """AUC with an episode bootstrap. `x` and `y` are full-length; `mask` selects
@@ -207,12 +210,13 @@ def main(argv=None) -> int:
         tick.set_color(theme.COOL if sig[k][1] == "instant" else theme.WARM)
     axb.set_xlim(0.30, 0.75)
     axb.set_ylim(-0.9, len(order) - 0.35)
-    axb.set_xlabel("AUC against the decisive label   (● discovery, ◆ held-out)")
+    axb.set_xlabel("AUC against the decisive label   (\u25cf discovery, \u25c6 pre-registered confirmatory)")
     axb.grid(axis="x", color=theme.FAINT, alpha=0.35, lw=0.6)
     axb.set_axisbelow(True)
     axb.spines["left"].set_visible(False)
     axb.tick_params(axis="y", length=0)
-    theme.verdict(axb, "nothing observable reaches AUC 0.65", theme.MUTED)
+    theme.verdict(axb, "no signal reaches AUC 0.65 \u2014 confirmed on a "
+                  "registered seed", theme.MUTED)
     axb.set_title("Instantaneous (blue) vs event triggers (amber)", loc="left",
                   pad=12)
 
@@ -264,15 +268,19 @@ def main(argv=None) -> int:
 
     fig.text(0.035, 0.150, "\n".join(textwrap.wrap(
         f"A veto changes an outcome only where holding and executing differ — "
-        f"{int(dec.sum())} of {n} decisions ({100 * dec.mean():.1f}%), replicated from "
-        f"8.7% at half the data. No run-time signal finds them: the best reaches AUC "
-        f"0.64, event triggers select decisions that matter no more than average, and "
-        f"the change detectors are ANTI-aligned with the start of a decisive burst on "
-        f"both episode sets — below chance with intervals excluding it, which is a "
-        f"stronger statement than no signal. The mismatch is in the objective: the "
-        f"world model's “something changed” tracks motion, while decisiveness tracks "
-        f"branch divergence and is measurable only by rewinding to the end of the "
-        f"episode. Intervals are 95% bootstraps over episodes.", 150)),
+        f"{int(dec.sum())} of {n} decisions ({100 * dec.mean():.1f}%). On a "
+        f"pre-registered confirmatory seed the decisive rate replicated at 7.8%, no "
+        f"run-time signal reached AUC 0.65 (max 0.566), the burst structure held at "
+        f"6.69\u00d7, and the change detectors came back ANTI-aligned with the start "
+        f"of a decisive burst at 0.19–0.23 with every interval excluding chance — a "
+        f"stronger statement than no signal, and the prediction registered as the one "
+        f"most likely to be a two-set coincidence. One prediction FAILED: two event "
+        f"triggers concentrated the signal at 1.32\u00d7 against a registered "
+        f"1.2\u00d7 line, so event-triggering is an open question rather than a closed "
+        f"one. The mismatch behind the rest is in the objective: the world model's "
+        f"“something changed” tracks motion, while decisiveness tracks branch "
+        f"divergence and is measurable only by rewinding to the end of the episode. "
+        f"Intervals are 95% bootstraps over episodes.", 150)),
         ha="left", va="top", fontsize=8.1, color=theme.MUTED, linespacing=1.5)
 
     fig.subplots_adjust(left=0.035, right=0.985, top=0.80, bottom=0.30)
@@ -283,7 +291,7 @@ def main(argv=None) -> int:
           f"burst autocorrelation {p_cond / p_base:.2f}x")
     for k in order:
         pt, lo, hi = ci(D, sig[k][0], dec, 1)
-        h = (f"  held-out {auc(signals(H)[k][0], H['dec']):.3f}"
+        h = (f"  confirmatory {auc(signals(H)[k][0], H['dec']):.3f}"
              if H is not None else "")
         print(f"      {k:>24} {pt:.3f} [{lo:.3f}, {hi:.3f}]{h}")
     return 0
