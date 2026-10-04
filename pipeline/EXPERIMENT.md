@@ -424,7 +424,7 @@ so the honest reading is that these triggers are unstable across seeds rather th
 reliably useless — and which of those it is needs its own registration, not a
 reinterpretation of this one. **Constraint 3's instantaneous and change-detector halves
 are unaffected** (P11 max AUC 0.566, P13 detectors at 0.188–0.229 with all intervals
-excluding chance, both on the same confirmatory seed).
+excluding chance, both on the same third seed).
 
 **Change detectors**, against the structure of a decisive burst. Decisive decisions are
 genuinely bursty — P(decisive | previous decisive) is **54.2%** against the 9.1% base, a
@@ -454,10 +454,15 @@ the burst's first decision in 26–44 of the bursts they catch, at a median lead
 decisive stretch has begun, never that one is coming. And they catch only **33–46%** of
 bursts at a useful threshold.
 
-**Confirmatory status.** P11 (no signal reaches 0.65), P13 (detectors anti-aligned),
-P14 (burst lift 6.69×) and P15 (decisive rate 7.8%) were pre-registered and held on a
-clean third seed. P12 failed. The constraint stands on its instantaneous and
-change-detector evidence; its event-trigger clause is open.
+**Replication status.** P11 (no signal reaches 0.65), P13 (detectors anti-aligned),
+P14 (burst lift 6.69×) and P15 (decisive rate 7.8%) held on a clean third seed; P12
+failed. **These are a robustness check, not a pre-registration** — the claim was pushed
+in `e8f7514` before P11–P15 was registered in `0d3b368`, and every threshold was set
+from values already measured on seeds 0 and 1 (audit in `sim/PREREGISTERED.md`). Four
+holds therefore evidence stability across seeds and little more; the informative result
+is P12's failure, which happened despite its bar being drawn from prior data. The
+constraint stands on its instantaneous and change-detector evidence; its event-trigger
+clause is open.
 
 **Reusable form:** *when the label requires a counterfactual, check whether any
 observable tracks it before building machinery that assumes one does.* The check is
@@ -465,16 +470,28 @@ cheap — one AUC against the post-hoc label — and it would have refused the v
 stage, the event triggers, and the state-change gate in an afternoon each. It is also
 the reason a better first stage cannot rescue this: there is nothing for it to read.
 
-### What the gate does do
+### What the gate does do — and what it does not
 
-Stated plainly because the two constraints above are easy to read as "it does
-nothing". The gate roughly doubles the rate at which a fire is a rescue, without
-raising the rate at which one is a breakage:
+The two constraints above are easy to read as "it does nothing", so the one thing the
+gate demonstrably changes is stated here, along with the thing it was first claimed to
+change and does not.
+
+**Conditional breakage does not move, at any operating point.** This half survives.
 
 | | conditional rescue | conditional breakage |
 |---|---|---|
-| no gate, every decision | 0.226 [0.154, 0.312] | 0.049 [0.033, 0.067] |
-| gated | **0.406** [0.237, 0.591] | **0.048** [0.023, 0.077] |
+| no gate, every decision | 0.226 [0.153, 0.315] | 0.049 [0.033, 0.069] |
+| surface **median** cell | 0.280 [0.151, 0.430] | 0.045 [0.021, 0.074] |
+| headline cell | 0.406 [0.234, 0.592] | 0.048 [0.023, 0.079] |
+| surface **argmax** | 0.556 [0.323, 0.773] | 0.065 [0.014, 0.125] |
+
+**Conditional rescue is a statement about where you tuned, not about the gate.**
+An earlier revision of this section read *"the gate roughly doubles the rate at which a
+fire is a rescue"* and quoted the 0.406 row. That was the headline cell — one cell of a
+searched (q1, q2) grid, and near its top. Paired against no gate over the same
+resampled episodes, the lift at the **median** cell is **+0.054 [−0.044, +0.160]**,
+which spans zero. The doubling claim is withdrawn; the row is kept above so the size of
+the tuning effect is visible rather than hidden.
 
 Conditional rescue is over fires on doomed actions, conditional breakage over fires on
 fine ones. They are the symmetric pair, and neither is recoverable from a net/100.

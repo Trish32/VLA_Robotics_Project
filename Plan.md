@@ -8,6 +8,48 @@ An item leaves this page by being measured, not by being argued.
 
 ---
 
+## 0. Status, and which numbers are comparable to which
+
+This page and [RESULTS.md](RESULTS.md) predate the simulator work in
+[`pipeline/sim/`](pipeline/sim/), so a reader arriving at either could act on a
+superseded conclusion. This table is the single place that says what is current, what
+it was measured on, and what it replaces. **Last reconciled 2026-10-04.**
+
+Two distinctions are load-bearing throughout and are never collapsed:
+
+- **REAL** means TUM RGB-D or recorded robot episodes. **SIM** means the MuJoCo
+  cube-to-bowl arena. A result on one is never reported as a result on the other.
+- A number is comparable to another only if both carry the same **task fingerprint**
+  (`loop.task_fingerprint()` — demonstrator constants, waypoint heights, arm geometry,
+  arena XML, and step budget). Three separate comparability failures are logged as
+  [S20], [S21] and [S22] in `pipeline/bug_log.txt`; in each the numbers were real and
+  the comparison was not.
+
+| area | data | current status | supersedes |
+|---|---|---|---|
+| **SLAM** | REAL | ORB-SLAM3 ATE **1.03 cm**, 41.4 FPS CPU. Dynamic rejection **80.9 → 18.7 cm**, at 38.1 → 18.5 FPS — *below* a 30 Hz loop, so not described as real-time | — |
+| **DROID-SLAM** | — | checkpoint loads 0/0/0, **never executed**. Every SLAM number here is ORB-SLAM3 | unchanged |
+| **Segmentation** | REAL | checkpoint 0/0/0; sparse conv 1e-10 vs `nn.Conv3d`; 4.8× / 32.4× fewer SAM passes, four of five steps bitwise-identical. **No mIoU** — blocked on ground truth | — |
+| **6-DoF pose** | REAL | **FoundationPose has run.** 2.06 cm on upstream demo (port validated), 175.63° on our mesh (input is the limit), stage-4 gate **refuses**, chain is position-only | replaces "never run" in RESULTS.md §nvdiffrast |
+| **Object dynamics** | REAL | **ties identity** on two episodes; the model never leaves its initialisation. "+26.2% vs constant velocity" was retracted by `world_model/RESULTS.md` as misleading | — |
+| **Object dynamics** | SIM | **+37.4% vs identity / +60.0% vs constant velocity** on 320 episodes. This is *not* evidence about real data and is never quoted as such | — |
+| **Candidate selection** | SIM | **headroom +0.0.** Perfect episode-depth selection 99.0% = policy alone 99.0%; a winner exists at 100% of decisions. The heuristic selector's 88.5% is *below* not selecting | replaces every earlier "the scorer ranks badly" reading — see W1, W2, W8, W11 |
+| **Commitment** | SIM | fixed-K peaks at 79.2% (K=32) with the two failure curves crossing at **K ≈ 36.5 [24.9, 42.6]**. The episode-commit "curve" is the selector's override rate (r = **−0.955**), not a commitment effect | replaces W12's original framing |
+| **Veto** | SIM | **9.1% of decisions are outcome-changing**, 90% of fires inert, conditional breakage flat at ~0.045. The rescue "doubling" is **withdrawn** — median-cell lift +0.054 [−0.044, +0.160] spans zero | replaces the 0.406 headline in EXPERIMENT.md §"What the gate does do" |
+| **Veto, stage-restricted** | SIM | **withdrawn (C4).** +5.5 [+2.0, +9.7] on discovery was a best-of-seven; held-out −0.5 [−3.3, +2.2] | — |
+| **Runtime signals** | SIM | nothing reaches AUC 0.65; change detectors **anti-aligned** with burst onset at 0.19–0.23. P12 **failed** — two triggers hit 1.32× — so the event-trigger clause is **open**, not closed | replaces "no trigger concentrates the signal" |
+| **P11–P15** | SIM | **a robustness check, not a pre-registration.** The claim was pushed before the registration, and every threshold came from data already in hand | audit in `sim/PREREGISTERED.md` |
+| **P16–P21** | SIM | **registered, not run.** The `piv*.json` sets were lost with the scratchpad, so running them now means regenerating seeds 0–2 first | — |
+| **VLA task success** | — | **does not exist.** GR00T emits 16 × 29 DoF in 3.0 s CPU; no task-success benchmark has been run on any task | — |
+
+**What this implies for sequencing, and it is not what §6 below says.** The simulator
+result is "selection cannot help *in an arena where the policy already scores 99%*",
+which is a statement about a saturated task. The measurement that would tell us what to
+fix next — a real VLA task-success baseline — has never been taken. §6 was written
+before that was clear and is ordered around the pose question alone.
+
+---
+
 ## 1. Blocked on a resource, not on effort
 
 These have a known route and a cost. Nothing here is a design question.
@@ -243,12 +285,22 @@ is visible and recoverable, a silently truncated instance is neither.
 
 ## 6. Sequencing
 
+> **Scope note, 2026-10-04.** The order below unblocks the *perception* line and is
+> still right for it. It predates the simulator work and so does not contain the
+> measurement that now gates everything else — a **real VLA task-success baseline**,
+> which has never been run on any task. Treat §6 as the perception track of a two-track
+> plan, not as the whole order. §0 has the reconciliation.
+
 Ordered by what unblocks the most, not by effort.
 
-1. **Explain the ≥99.5° rotation error** — run upstream's `demo_data/mustard0` (queued
-   as r12). It is the only test that separates our mesh from the model, and until it runs
-   no pose accuracy is claimable. `refine_with_pose` is now wired behind a gate
-   (`e2e_pose.py`), so the moment a pose passes, it flows; today it does not.
+1. ~~**Explain the ≥99.5° rotation error** — run upstream's `demo_data/mustard0`.~~
+   **DONE, 2026-09-28, and it answered.** Upstream's own demo registers at **2.06 cm**
+   through the same code path, while our mesh gives **175.63°** and 72 cm against the
+   map. That separates mesh from model: the port is validated, the input is the limit.
+   `refine_with_pose` is wired behind the stage-4 gate (`e2e_pose.py`) and the gate
+   **refuses** on today's numbers, so the chain stays position-only. The successor item
+   is not "explain the error" but **"improve the mask and mesh, then re-run"** — see the
+   status table at the top of this file.
 2. **Ground-truth instance labels** — unblocks mIoU, the MobileSAM trade, the `inside`
    support test, and any statement about recognition. One resource, four gaps.
 3. **A CUDA box** — unblocks DROID-SLAM tracking and turns every MODELLED speedup into a

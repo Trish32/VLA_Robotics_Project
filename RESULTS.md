@@ -602,10 +602,18 @@ session compiling kernels nothing calls. That hypothesis held.
 
 ### nvdiffrast on a T4 · MEASURED (Kaggle T4)
 
-`nvdiffrast` is the reason FoundationPose has never run: it is CUDA-compile-only, so the
-local bar was reduced to import-guarding it (`foundationpose_6dof/compat.py` raises on
-use rather than stubbing — a stub returning zeros passes shape tests and poisons every
-downstream result).
+`nvdiffrast` was the reason FoundationPose could not run **locally**: it is
+CUDA-compile-only, so the local bar was reduced to import-guarding it
+(`foundationpose_6dof/compat.py` raises on use rather than stubbing — a stub returning
+zeros passes shape tests and poisons every downstream result).
+
+> **SUPERSEDED, 2026-09-28.** FoundationPose has since run on a T4. `register()` plus
+> tracking gives **2.08 cm** world-frame spread over 8 frames on our own mesh, and
+> **2.06 cm** on upstream's `demo_data/mustard0` — so the port is validated. On our mesh
+> its pose disagrees with the segmentation centroid by **72 cm** with a **175.63°**
+> rotation error, and the stage-4 gate refuses it; the chain stays position-only. The
+> limit is our 695-px mask over a one-sided shell, not the port. Any sentence below
+> this line that reads "never run" describes the local bar only.
 
 Built on `torch 2.10.0+cu128` / CUDA 12.8 / Tesla T4. The first attempt failed inside
 pip's build isolation, which provisions a fresh environment without the installed torch
