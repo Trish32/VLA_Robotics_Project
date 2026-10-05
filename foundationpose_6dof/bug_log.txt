@@ -433,6 +433,44 @@ Metric before/after:  v18 prior frames 5-7   n/a (skipped)  ->  inf (FAIL)
                       v18 prior median |dz|  103.89 cm over 5 frames  ->  125.85 cm over 8
 
 
+[13] The pose gate accepted a NaN pose, a non-rotation, and a residual taken on almost nothing
+-----------------------------------------------------------------------------------------------
+Date:        2026-10-05
+Found by:    a review (Codex), with minimal local reproductions — not by any run. Verified
+             here before fixing:
+               check_pose(pose with NaN translation)        -> accepted
+               check_pose(rotation block = 2I)               -> accepted
+               depth residual, model covering ~0.4% of the
+               observed pixels                               -> 0.00 cm
+
+Cause:       Three independent gaps.
+               - Every gate test is `value > threshold`, and NaN fails every comparison, so a
+                 NaN pose raised no reason at all.
+               - The rotation metric clips its arccos argument for numerical safety, which
+                 also maps a matrix that is not a rotation to a small angle: 2I read as 0 deg.
+               - The depth residual is a median over the pixels the model covers, with no
+                 floor on how many. A residual is evidence only about the pixels it saw.
+             And the depth check, the only one independent of the map, was skipped rather
+             than required when its inputs were missing.
+
+Fix:         Validity is checked first: non-finite poses and rotation blocks failing
+             R^T R = I or det = 1 (tolerance 1e-3) are refused before anything else is
+             computed. `depth_agreement` returns coverage with the residual; the gate
+             refuses below 50% of the measured pixels under the mask — "the pose must account
+             for at least half the observed object", fixed before being run on any recorded
+             result (the map pose's 92-98% was already known; the floor was not set from it).
+             The main path now REQUIRES depth evidence. 7 tests.
+
+Metric before/after:  NaN pose / 2I / 4%-coverage residual   accepted  ->  refused
+                      v15 register() result                  refused   ->  refused (frame 0 cover 64%)
+                      v18 prior-tracked result               refused   ->  refused (frame 0 cover 31%)
+
+Also corrected in the same pass, because the review was right: the v18 write-up called a
+5-iteration refine call "one step", and said v18 cleared the mesh and trajectory. It did
+not — they were built from depth-agreeing points, so the map pose's 3.9 cm is partly by
+construction. Corrected in place on every page, with the correction marked.
+
+
 VERIFICATION STATUS — local vs cloud
 --------------------------------------
 LOCALLY VERIFIED (CPU, no nvdiffrast, no pytorch3d):

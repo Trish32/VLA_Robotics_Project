@@ -209,9 +209,11 @@ limit either. A second control gave the bottle exactly the chair's coverage — 
 direction — and it still registers within **4.79°**, 16/16. So coverage is cleared too. What
 remains is the chair case as a whole — and a third run located it. Our own mesh, placed at the
 pose our map gives it, explains the measured depth to **3.9 cm**; FoundationPose's scorer still
-prefers its own pose, 74–166 cm off, and one refinement step from the right pose walks **77 cm**
-away from it. The inputs are adequate; the estimator fails on this object — 1.7 m and thin, at
-2 m. The gate now checks rendered depth against measured depth, which needs no map at all. The
+prefers its own pose, 74–166 cm off, and one refinement call (5 internal iterations) from the
+map pose moves it **77 cm**. That locates the behaviour in the estimator on this input. It does
+not clear our inputs: the mask and mesh were built from depth-agreeing points, so the map pose's
+3.9 cm is partly by construction — the comparison holds because both poses are scored on the
+same pixels. The gate now checks rendered depth against measured depth, which needs no map at all. The
 next target is a compact desk object on `fr1/xyz`.
 
 The 6-DoF path is nonetheless wired: `tools/e2e_pose.py` consumes the pose and calls

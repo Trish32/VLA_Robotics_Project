@@ -72,7 +72,7 @@ by **74–166 cm**.
 | | result |
 |---|---|
 | scorer, one batch: `register()` best vs map pose | **134.28 vs 133.94** — prefers `register()` |
-| one refinement from the map pose | moves it **77.33 cm, 14.11°**; depth residual 3.77 → **85.24 cm** |
+| one refinement call (5 internal iterations) from the map pose | moves it **77.33 cm, 14.11°**; depth residual 3.77 → **85.24 cm** |
 | tracked 8 frames from there | median depth residual **125.85 cm**, 3 frames off the object; gate **0/8** |
 
 **FoundationPose leaves a correct pose for a wrong one on this object** — its scorer
@@ -235,7 +235,7 @@ the top two rows were both about mesh quality and the measured cause was neither
 | ~~re-run `register()` on the rebuilt bundle~~ | the gain was measured on the input only | **DONE (v15): still refused.** 175.63° → 124.27°, hypotheses still scattered 1/16. Input quality was not binding |
 | ~~mesh recipe~~ | fusion → ~1k points → Poisson, at the chair's relative resolution | **CLEARED (v16b).** mustard0 meshed the chair's way, wide coverage: 2.95°, 0.08 cm, 16/16 |
 | ~~coverage~~ | the chair is seen over at most 31.4° | **CLEARED (v17).** mustard0 at 31.3° of coverage: 4.79°, 0.29 cm, 16/16 |
-| ~~the chair's mesh and trajectory~~ | were the remaining suspects after v17 | **CLEARED (v18).** The map pose built from them explains the depth to 3.9 cm; FoundationPose's refiner leaves it (77 cm in one step) and its scorer prefers the wrong pose |
+| the chair's mesh and trajectory | were the remaining suspects after v17 | **NOT cleared** *(corrected 2026-10-05; first written as CLEARED)*. On identical pixels the map pose built from them fits the depth to 3.9 cm and FoundationPose still leaves it — but the mask and mesh were built from depth-agreeing points, so that 3.9 cm is partly by construction |
 | **FoundationPose on this object** | a 1.7 m thin object at 2 m, 160 × 160 crop, Kinect-v1 depth | **next.** A compact rigid target — TUM `fr1/xyz` has them, ORB-SLAM3 at 1.03 cm |
 | ~~denser fusion (smaller `--stride`)~~ | published as "bigger masks and a less ragged shell" | **REFUTED.** On a frame where the chair is in view, 73% of its points agree with measured depth to a −1.1 cm median — the fusion was never the limit |
 | ~~a cleaner instance~~ | `chair_4` was called a 1.58 m *region*, not an object | **CLOSED.** Outlier rejection before meshing takes it to 0.59 m tall, and `survey_instances.py` scored all 5 instances: `chair_4` leads every column, **93 frames over the visibility bar** against the runner-up's 13, and 2 of 5 are not poseable at all. No cleaner instance exists in this scene |

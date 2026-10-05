@@ -174,24 +174,24 @@ def view_span(ob_in_cam: list[np.ndarray]) -> float:
     return max((rotation_deg(a, b) for i, a in enumerate(R) for b in R[i + 1:]), default=0.0)
 
 
-def track_depth_residual(vertices: np.ndarray, faces: np.ndarray, ob_in_cam: np.ndarray,
-                         K: np.ndarray, depth_m: np.ndarray) -> float:
-    """Median |model depth - measured depth| in metres, over pixels where both exist.
+def depth_agreement(vertices: np.ndarray, faces: np.ndarray, ob_in_cam: np.ndarray,
+                    K: np.ndarray, depth_m: np.ndarray) -> tuple[float, float]:
+    """(median |model depth - measured depth| in metres, coverage) for one pose.
 
-    The direct test of a tracked pose that v16's extent check only stood in for: put the
-    CAD model at the tracked pose, render its depth, and compare with what the depth
-    camera measured at the same pixels. Returns inf when the model covers no measured
-    pixel.
+    Coverage is the fraction of measured pixels (depth > 0) that the rendered model covers.
+    It exists because the residual alone can be made small by covering almost nothing: a
+    review found a model covering 1 of 25 valid pixels returning 0 cm. A residual is only
+    evidence about the pixels it was computed on, so the gate needs both numbers.
 
     Rendered by ray-casting the TRIANGLES, not by z-buffering vertices. A first version
     splatted vertices and was 5.5 cm off at the exact pose in its own test: 864 vertices
     over 2,980 pixels leave gaps in the front surface, and back-face vertices fill them.
-    mustard0's CAD mesh has the same problem at its working distance — ~11k vertices,
-    roughly a third facing the camera, over ~10k pixels.
+    Returns (inf, 0.0) when the model covers no measured pixel.
     """
     import open3d as o3d
 
     h, w = depth_m.shape
+    measured = depth_m > 0
     mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(np.asarray(vertices, float)),
                                      o3d.utility.Vector3iVector(np.asarray(faces, np.int32)))
     mesh.transform(np.asarray(ob_in_cam, float))
@@ -203,7 +203,14 @@ def track_depth_residual(vertices: np.ndarray, faces: np.ndarray, ob_in_cam: np.
     # Pinhole rays are NOT unit length (their z-component is 1), so t_hit already IS
     # the depth along the optical axis: z = t * d_z with d_z = 1.
     z = t * rays.numpy()[..., 5]
-    both = np.isfinite(z) & (depth_m > 0)
+    both = np.isfinite(z) & measured
+    coverage = float(both.sum() / max(measured.sum(), 1))
     if not both.any():
-        return float("inf")
-    return float(np.median(np.abs(z[both] - depth_m[both])))
+        return float("inf"), 0.0
+    return float(np.median(np.abs(z[both] - depth_m[both]))), coverage
+
+
+def track_depth_residual(vertices: np.ndarray, faces: np.ndarray, ob_in_cam: np.ndarray,
+                         K: np.ndarray, depth_m: np.ndarray) -> float:
+    """The residual half of `depth_agreement`, for callers that need only that."""
+    return depth_agreement(vertices, faces, ob_in_cam, K, depth_m)[0]

@@ -103,9 +103,10 @@ it gives **6,908 px** over the same fusion, against the working control's 3,252.
 input, the rotation moves to **124.27°** but the hypotheses still scatter, so the input was a real
 defect and not the binding one. A control then cleared our mesh recipe too: upstream's mustard0,
 meshed exactly our way, registers within 2.95° of its CAD pose — and within 4.79° when limited to
-the chair's 31° of coverage. A third run located it: our map's pose explains the depth to 3.9 cm, but
-FoundationPose prefers a pose 74–166 cm off and refines away from the right one — it fails on this
-1.7 m object, not on our inputs. Next target: a compact object.
+the chair's 31° of coverage. A third run found that FoundationPose prefers a pose 74–166 cm off over
+our map's pose, which fits the depth to 3.9 cm on the same pixels, and refines away from it. That
+locates the behaviour in the estimator on this input; it does not clear our inputs, which were built
+from the same depth. Next: tighter acceptance checks, then a per-iteration trace, then a compact object.
 
 ### [DexVLA](DexVLA_Robotics/) — VLM with a plug-in diffusion expert
 

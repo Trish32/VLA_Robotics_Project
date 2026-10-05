@@ -239,7 +239,8 @@ def test_depth_residuals_on_the_real_bundle():
         T[:3, 3] = f["mesh_origin_cam"]
         map_poses.append(T)
     r = depth_residuals_cm(map_poses, frames, BUNDLE, meta["depth_scale"], meta["K"])
-    assert all(x is not None and x < 8.0 for x in r)
+    assert all(dz is not None and dz < 8.0 for dz, _ in r)
+    assert all(cov is not None and cov >= 0.5 for _, cov in r)
 
 
 def test_a_mesh_rendered_off_the_object_fails_rather_than_skipping():
@@ -252,3 +253,56 @@ def test_a_mesh_rendered_off_the_object_fails_rather_than_skipping():
     assert not c.accepted
     assert any("covers no measured pixel" in r for r in c.reasons)
 
+
+
+# --------------------------------------------- validity and evidence (review, 2026-10-05)
+
+def test_a_nan_pose_is_refused():
+    """NaN fails every `>` comparison, so it used to pass every check."""
+    T = pose()
+    T[2, 3] = np.nan
+    c = gate(T, depth=2.0, span=0.2)
+    assert not c.accepted and "pose is not finite" in c.reasons
+
+
+def test_a_matrix_that_is_not_a_rotation_is_refused():
+    """2I read as 0 deg from the reference, because the metric clips arccos."""
+    c = gate(pose(R=2 * np.eye(3)))
+    assert not c.accepted and any("not a rotation" in r for r in c.reasons)
+
+
+def test_a_reflection_is_refused():
+    c = gate(pose(R=np.diag([1.0, 1.0, -1.0])))
+    assert not c.accepted
+
+
+def test_low_coverage_is_refused_even_with_a_perfect_residual():
+    """A model covering 1 of 25 valid pixels returned a 0 cm residual."""
+    c = _gate_dz(0.0, depth_coverage=0.04)
+    assert not c.accepted and any("covers 4%" in r for r in c.reasons)
+
+
+def test_coverage_floor_is_half_the_observed_object():
+    assert _gate_dz(1.0, depth_coverage=0.51).accepted
+    assert not _gate_dz(1.0, depth_coverage=0.49).accepted
+
+
+def test_missing_depth_evidence_is_refused_when_required():
+    c = _gate_dz(None, depth_coverage=None, require_depth_evidence=True)
+    assert not c.accepted and any("required" in r for r in c.reasons)
+
+
+def test_depth_agreement_reports_the_coverage_it_was_computed_on():
+    """The residual is 0 on the pixels it saw — and coverage says how few those were."""
+    o3d = pytest.importorskip("open3d")
+    from foundationpose_6dof.mesh_control import depth_agreement
+
+    box = o3d.geometry.TriangleMesh.create_box(0.02, 0.02, 0.02)
+    box.translate([-0.01, -0.01, -0.01])
+    K = np.array([[500.0, 0, 320], [0, 500.0, 240], [0, 0, 1]])
+    T = pose(t=(0, 0, 2.0))
+    d = np.zeros((480, 640))
+    d[200:280, 280:360] = 1.99
+    r, cov = depth_agreement(np.asarray(box.vertices), np.asarray(box.triangles), T, K, d)
+    assert r < 0.001
+    assert cov < 0.05

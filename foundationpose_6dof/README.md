@@ -43,9 +43,10 @@ resolution — registers within **2.95°** of its CAD pose, 16/16. **And so was 
 limited to the chair's **31°** of views, it still lands within **4.79°**, 16/16.
 
 **Then the failure was located.** Our mesh at our map's pose explains the measured depth to
-**3.9 cm**; FoundationPose's scorer prefers its own pose (74–166 cm off) and one refinement
-step from the correct pose walks **77 cm** away. The inputs are adequate — FoundationPose
-fails on this 1.7 m object. [RESULTS.md](RESULTS.md).
+**3.9 cm** on the same pixels; FoundationPose's scorer prefers its own pose (74–166 cm off)
+and one refinement call (5 internal iterations) from the map pose moves it **77 cm**. That
+locates the behaviour in the estimator; it does not clear the inputs, which were built from
+the same depth. [RESULTS.md](RESULTS.md).
 
 ## Where the mesh comes from — no CAD models
 

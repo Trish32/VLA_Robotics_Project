@@ -30,7 +30,7 @@ Two distinctions are load-bearing throughout and are never collapsed:
 | **SLAM** | REAL | ORB-SLAM3 ATE **1.03 cm**, 41.4 FPS CPU. Dynamic rejection **80.9 → 18.7 cm**, at 38.1 → 18.5 FPS — *below* a 30 Hz loop, so not described as real-time | — |
 | **DROID-SLAM** | — | checkpoint loads 0/0/0, **never executed**. Every SLAM number here is ORB-SLAM3 | unchanged |
 | **Segmentation** | REAL | checkpoint 0/0/0; sparse conv 1e-10 vs `nn.Conv3d`; 4.8× / 32.4× fewer SAM passes, four of five steps bitwise-identical. **No mIoU** — blocked on ground truth | — |
-| **6-DoF pose** | REAL | **Re-run on the rebuilt input, 2026-10-04: still refused.** Rotation 175.63° → 124.27°, but the top-16 hypotheses still scatter (1/16 within 15°) where mustard0 in the same job converges 16/16. Input quality was a real defect, not the binding one. The 2.08 cm self-consistency is **withdrawn** — 33.17 cm over a real baseline. Controls on mustard0 meshed **our way** clear the mesh recipe (v16b, 2.95°) **and the chair's 31° coverage** (v17, 4.79°, 16/16). **v18: FoundationPose fails on this object, not on our inputs** — our map pose explains the depth to 3.9 cm, yet its scorer prefers a pose 74–166 cm off and one refinement step walks 77 cm away from the right one. Chain stays position-only | replaces "never run" in RESULTS.md §nvdiffrast; the rebuild replaces "a denser fusion is the lever" in §2 |
+| **6-DoF pose** | REAL | **Re-run on the rebuilt input, 2026-10-04: still refused.** Rotation 175.63° → 124.27°, but the top-16 hypotheses still scatter (1/16 within 15°) where mustard0 in the same job converges 16/16. Input quality was a real defect, not the binding one. The 2.08 cm self-consistency is **withdrawn** — 33.17 cm over a real baseline. Controls on mustard0 meshed **our way** clear the mesh recipe (v16b, 2.95°) **and the chair's 31° coverage** (v17, 4.79°, 16/16). **v18: FoundationPose leaves a pose that fits the depth far better** — on identical pixels our map pose fits the depth to 3.9 cm and its scorer still prefers a pose 74–166 cm off; one refinement call (5 iterations) from the map pose moves it 77 cm. Our inputs are not thereby cleared: the mask and mesh were built from depth-agreeing points, so the 3.9 cm is partly by construction. Chain stays position-only | replaces "never run" in RESULTS.md §nvdiffrast; the rebuild replaces "a denser fusion is the lever" in §2 |
 | **Object dynamics** | REAL | **ties identity** on two episodes; the model never leaves its initialisation. "+26.2% vs constant velocity" was retracted by `world_model/RESULTS.md` as misleading | — |
 | **Object dynamics** | SIM | **+37.4% vs identity / +60.0% vs constant velocity** on 320 episodes. This is *not* evidence about real data and is never quoted as such | — |
 | **Candidate selection** | SIM | **headroom +0.0.** Perfect episode-depth selection 99.0% = policy alone 99.0%; a winner exists at 100% of decisions. The heuristic selector's 88.5% is *below* not selecting | replaces every earlier "the scorer ranks badly" reading — see W1, W2, W8, W11 |
@@ -443,15 +443,15 @@ Ordered by what unblocks the most, not by effort.
    recipe nor the coverage explains the chair's 124°. What remains is the chair case as a
    whole — object, sensor range, mask, and the trajectory its mesh is fused along
    (ORB-SLAM3 on a *dynamic* sequence, ATE 18.7 cm). `foundationpose_6dof/Plan.md`.
-4. **A compact target on TUM `fr1/xyz`.** v18 located the failure: our map pose, built from
-   this trajectory and this mesh, explains the measured depth to **3.9 cm**, and
-   FoundationPose still leaves it — its scorer prefers `register()`'s pose (134.28 vs
-   133.94) and one refinement step walks the correct pose **77 cm** away. So the inputs are
-   adequate and the estimator fails *on this object*: 1.7 m, thin, at 2 m, in a 160 × 160
-   crop. `fr1/xyz` has compact rigid desk objects and ORB-SLAM3 at 1.03 cm;
-   `survey_instances.py` picks the most poseable one, then the same bundle → T4 → gate path.
-   The gate now also checks rendered-mesh depth against measured depth, independent of
-   the map.
+4. **A compact target on TUM `fr1/xyz`.** v18: on identical pixels, our map pose fits the
+   measured depth to **3.9 cm**, and FoundationPose still leaves it — its scorer prefers
+   `register()`'s pose (134.28 vs 133.94) and one refinement call (5 internal iterations)
+   from the map pose moves it **77 cm**. That locates the *behaviour* in the estimator on
+   this input; it does **not** clear our inputs, because the mask and mesh were built from
+   depth-agreeing points and the 3.9 cm is partly by construction. *(Corrected 2026-10-05,
+   after review: the first write-up said "one step" and "inputs are adequate".)*
+   `fr1/xyz` has compact rigid desk objects and ORB-SLAM3 at 1.03 cm; the bundle there
+   should hold out validation frames that took no part in building the mesh.
 5. **Ground-truth instance labels** — unblocks mIoU, the MobileSAM trade, the `inside`
    support test, and any statement about recognition. One resource, four gaps.
 6. **A CUDA box** — unblocks DROID-SLAM tracking and turns every MODELLED speedup into a

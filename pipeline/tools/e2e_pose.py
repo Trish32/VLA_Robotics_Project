@@ -99,14 +99,16 @@ class PoseCheck:
     accepted: bool
     reasons: list[str] = field(default_factory=list)
     depth_residual_cm: float | None = None
+    depth_coverage: float | None = None
 
     def as_row(self) -> str:
         mark = "ok  " if self.accepted else "FAIL"
         dz = ("   n/a" if self.depth_residual_cm is None
               else f"{self.depth_residual_cm:6.2f}")
+        cov = "  n/a" if self.depth_coverage is None else f"{100 * self.depth_coverage:4.0f}%"
         return (f"  {mark} frame {self.frame}:  t {self.translation_cm:7.2f} cm   "
                 f"R {self.rotation_deg:6.2f} deg   behind {self.behind_surface_cm:7.2f} cm   "
-                f"|dz| {dz} cm")
+                f"|dz| {dz} cm  cover {cov}")
 
 
 def check_pose(
@@ -122,6 +124,9 @@ def check_pose(
     depth_margin_cm: float = 10.0,
     depth_residual_cm: float | None = None,
     max_depth_residual_cm: float = 8.0,
+    depth_coverage: float | None = None,
+    min_depth_coverage: float = 0.5,
+    require_depth_evidence: bool = False,
 ) -> PoseCheck:
     """Corroborate one pose against the map and the depth image.
 
@@ -129,6 +134,25 @@ def check_pose(
     pose good enough to reach for" rather than "is this pose significantly different".
     """
     T = np.asarray(T_cam_obj, float).reshape(4, 4)
+
+    # Validity first. Every comparison below is a `>` against a threshold, and NaN fails
+    # every comparison — so a NaN pose used to pass every check. And the rotation metric
+    # clips its arccos argument, so a matrix that is not a rotation at all (2I) read as
+    # 0 deg from the reference. Both were found by review, not by a run.
+    invalid = []
+    if not np.isfinite(T).all():
+        invalid.append("pose is not finite")
+    else:
+        R = T[:3, :3]
+        if (np.abs(R.T @ R - np.eye(3)).max() > 1e-3
+                or abs(np.linalg.det(R) - 1.0) > 1e-3):
+            invalid.append("rotation block is not a rotation (R^T R != I or det != 1)")
+    if invalid:
+        return PoseCheck(frame=frame, translation_cm=float("nan"),
+                         rotation_deg=float("nan"), behind_surface_cm=float("nan"),
+                         accepted=False, reasons=invalid,
+                         depth_residual_cm=depth_residual_cm, depth_coverage=depth_coverage)
+
     translation_cm = float(np.linalg.norm(T[:3, 3] - np.asarray(origin_cam, float)) * 100)
     rotation_deg = rotation_error_deg(T[:3, :3], R_world_to_cam)
 
@@ -162,6 +186,14 @@ def check_pose(
     # 1.3-6.0 cm and FoundationPose's register() pose 74-166 cm on the SAME pixels.
     # 8 cm is the bundle's existing corroboration tolerance (`--depth-tol`), not a value
     # tuned to those numbers.
+    # A residual is evidence only about the pixels it was computed on. Without a floor on
+    # how many, a pose covering 1 of 25 valid pixels read 0 cm. The floor — half the
+    # observed object — was fixed before it was run on any recorded result.
+    if depth_coverage is not None and depth_coverage < min_depth_coverage:
+        reasons.append(f"rendered mesh covers {100 * depth_coverage:.0f}% of the measured "
+                       f"pixels under the mask < {100 * min_depth_coverage:.0f}%")
+    if require_depth_evidence and (depth_residual_cm is None or depth_coverage is None):
+        reasons.append("depth-consistency evidence unavailable, and it is required")
     if depth_residual_cm is not None and depth_residual_cm > max_depth_residual_cm:
         reasons.append(
             "rendered mesh covers no measured pixel under the mask"
@@ -171,10 +203,11 @@ def check_pose(
 
     return PoseCheck(frame=frame, translation_cm=translation_cm, rotation_deg=rotation_deg,
                      behind_surface_cm=behind_cm, accepted=not reasons, reasons=reasons,
-                     depth_residual_cm=depth_residual_cm)
+                     depth_residual_cm=depth_residual_cm, depth_coverage=depth_coverage)
 
 
-def depth_residuals_cm(poses, frames, bundle: Path, depth_scale: float, K) -> list[float | None]:
+def depth_residuals_cm(poses, frames, bundle: Path, depth_scale: float, K
+                       ) -> list[tuple[float | None, float | None]]:
     """Per frame: median |rendered mesh depth - measured depth| under the mask, in cm.
 
     None ONLY where it cannot be computed (no open3d, missing files) — the check is then
@@ -189,22 +222,25 @@ def depth_residuals_cm(poses, frames, bundle: Path, depth_scale: float, K) -> li
         import open3d as o3d
 
         sys.path.insert(0, str(ROOT))
-        from foundationpose_6dof.mesh_control import track_depth_residual
+        from foundationpose_6dof.mesh_control import depth_agreement
     except ImportError:
-        return [None] * len(poses)
+        return [(None, None)] * len(poses)
     mesh = o3d.io.read_triangle_mesh(str(bundle / "mesh.obj"))
     V, F = np.asarray(mesh.vertices), np.asarray(mesh.triangles)
-    out: list[float | None] = []
+    out: list[tuple[float | None, float | None]] = []
     for T, rec in zip(poses, frames):
         i = rec["frame"]
         d = cv2.imread(str(bundle / f"depth_{i:03d}.png"), cv2.IMREAD_ANYDEPTH)
         m = cv2.imread(str(bundle / f"mask_{i:03d}.png"), cv2.IMREAD_GRAYSCALE)
         if d is None or m is None:
-            out.append(None)
+            out.append((None, None))
+            continue
+        if not np.isfinite(np.asarray(T, float)).all():
+            out.append((float("inf"), 0.0))          # nothing to render; check_pose refuses
             continue
         dm = np.where(m > 0, d.astype(np.float32) / depth_scale, 0.0)
-        r = track_depth_residual(V, F, np.asarray(T, float), np.asarray(K, float), dm)
-        out.append(float("inf") if not np.isfinite(r) else r * 100)
+        r, cov = depth_agreement(V, F, np.asarray(T, float), np.asarray(K, float), dm)
+        out.append((float("inf") if not np.isfinite(r) else r * 100, cov))
     return out
 
 
@@ -218,6 +254,9 @@ def main() -> int:
     ap.add_argument("--max-depth-residual-cm", type=float, default=8.0,
                     help="median |rendered mesh depth - measured depth| under the mask; "
                          "8 cm is the bundle's existing --depth-tol")
+    ap.add_argument("--min-depth-coverage", type=float, default=0.5,
+                    help="fraction of measured pixels under the mask the rendered mesh must "
+                         "cover; fixed before being run on any recorded result")
     ap.add_argument("--out", type=Path, default=E2E / "pose.json")
     ap.add_argument("--force", action="store_true",
                     help="write the refined pose even if the checks fail (records that "
@@ -281,9 +320,9 @@ def main() -> int:
         print("[4 pose ]  no cv2 — skipping the depth check")
 
     residuals = depth_residuals_cm(poses, frames, BUNDLE, meta["depth_scale"], meta["K"])
-    if all(r is None for r in residuals):
+    if all(r is None for r, _ in residuals):
         print("[4 pose ]  depth-consistency check unavailable (needs open3d and the bundle "
-              "images) — SKIPPED, not passed")
+              "images) — it is REQUIRED, so every frame is refused")
     checks = [
         check_pose(T, frame=rec["frame"],
                    origin_cam=rec["mesh_origin_cam"],
@@ -291,17 +330,19 @@ def main() -> int:
                    depth_median_m=dm, depth_span_m=span,
                    max_translation_cm=args.max_translation_cm,
                    max_rotation_deg=args.max_rotation_deg,
-                   depth_residual_cm=r,
-                   max_depth_residual_cm=args.max_depth_residual_cm)
-        for T, rec, (dm, span), r in zip(poses, frames, depth_stats, residuals)
+                   depth_residual_cm=r, depth_coverage=cov,
+                   max_depth_residual_cm=args.max_depth_residual_cm,
+                   min_depth_coverage=args.min_depth_coverage,
+                   require_depth_evidence=True)
+        for T, rec, (dm, span), (r, cov) in zip(poses, frames, depth_stats, residuals)
     ]
     for c in checks:
         print(c.as_row())
 
     n_ok = sum(c.accepted for c in checks)
     print(f"\n[4 pose ]  {n_ok}/{len(checks)} frames corroborate the map")
-    print(f"[4 pose ]  median translation {np.median([c.translation_cm for c in checks]):.2f} cm"
-          f"   median rotation {np.median([c.rotation_deg for c in checks]):.2f} deg")
+    print(f"[4 pose ]  median translation {np.nanmedian([c.translation_cm for c in checks]):.2f} cm"
+          f"   median rotation {np.nanmedian([c.rotation_deg for c in checks]):.2f} deg")
 
     # A consistent tracker that is consistently wrong still fails. Self-consistency was
     # already measured upstream (world-frame spread); it is not evidence of accuracy.
@@ -341,7 +382,7 @@ def main() -> int:
     # our map puts the object so the disagreement is visible rather than only asserted.
     # Deliberately NOT called `pose_world`: that field stays null when refused, so
     # nothing downstream can read a rejected pose by forgetting to check `accepted`.
-    best_any = min(checks, key=lambda c: c.translation_cm)
+    best_any = min(checks, key=lambda c: (np.isnan(c.translation_cm), c.translation_cm))
     rec_any = next(r for r in frames if r["frame"] == best_any.frame)
     T_world_any = (np.asarray(rec_any["cam_to_world"], float)
                    @ poses[[r["frame"] for r in frames].index(best_any.frame)])
@@ -385,11 +426,12 @@ def main() -> int:
         "target": meta["target"], "label": meta["label"],
         "source": result.get("source"),
         "frames_corroborating": n_ok, "frames_total": len(checks),
-        "median_translation_cm": float(np.median([c.translation_cm for c in checks])),
-        "median_rotation_deg": float(np.median([c.rotation_deg for c in checks])),
+        "median_translation_cm": float(np.nanmedian([c.translation_cm for c in checks])),
+        "median_rotation_deg": float(np.nanmedian([c.rotation_deg for c in checks])),
         "thresholds": {"translation_cm": args.max_translation_cm,
                        "rotation_deg": args.max_rotation_deg,
-                       "depth_residual_cm": args.max_depth_residual_cm},
+                       "depth_residual_cm": args.max_depth_residual_cm,
+                       "depth_coverage": args.min_depth_coverage},
         "initialization": result.get("initialization", "register"),
         "median_depth_residual_cm": float(np.median(rs)) if rs else None,
         "frames_off_object": n_off if rs else None,
