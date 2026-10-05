@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-BUNDLE = ROOT / "pipeline/assets/e2e/pose_bundle"
+BUNDLE = Path(os.environ.get("E2E_DIR", ROOT / "pipeline/assets/e2e")) / "pose_bundle"
 
 #: Every key `fp.py` reads out of bundle.json, with the line it reads it on.
 REQUIRED = {

@@ -452,6 +452,15 @@ Ordered by what unblocks the most, not by effort.
    after review: the first write-up said "one step" and "inputs are adequate".)*
    `fr1/xyz` has compact rigid desk objects and ORB-SLAM3 at 1.03 cm; the bundle there
    should hold out validation frames that took no part in building the mesh.
+   **P1 (v19):** the 77 cm is divergence, not a wrong first step — one update from the map
+   pose improves the depth fit (3.77 → 2.46 cm), the second already fails. One update per
+   frame does not rescue it (gate 1/8). The chair's first step is ~20× mustard0's in
+   normalised units.
+   **P2 is blocked on segmentation.** On `fr1/xyz`, Mask3D proposes no compact desk object
+   at any threshold down to 0.2 — the small instances are fragments of monitor edges and
+   chairs; the cup, mouse, keyboard and books are never segmented. A compact target would
+   have to be defined another way (a SAM mask lifted with depth and the trajectory), which
+   tests FoundationPose on a compact object but not our segmentation.
 5. **Ground-truth instance labels** — unblocks mIoU, the MobileSAM trade, the `inside`
    support test, and any statement about recognition. One resource, four gaps.
 6. **A CUDA box** — unblocks DROID-SLAM tracking and turns every MODELLED speedup into a

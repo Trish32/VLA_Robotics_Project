@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -29,7 +30,9 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-OUT = ROOT / "pipeline/assets/e2e"
+# E2E_DIR lets a second scene run the same stages without overwriting the first
+# (the chair bundle and its Kaggle results are keyed to what is in the default).
+OUT = Path(os.environ.get("E2E_DIR", ROOT / "pipeline/assets/e2e"))
 DATA = ROOT / "orbslam3_baseline/data"
 
 # Sequence, trajectory and INTRINSICS all follow fuse.json rather than being hardcoded.

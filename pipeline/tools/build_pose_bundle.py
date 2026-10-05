@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -44,7 +45,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 DATA = ROOT / "orbslam3_baseline/data"
-E2E = ROOT / "pipeline/assets/e2e"
+# E2E_DIR lets a second scene run the same stages without overwriting the first
+# (the chair bundle and its Kaggle results are keyed to what is in the default).
+E2E = Path(os.environ.get("E2E_DIR", ROOT / "pipeline/assets/e2e"))
 OUT = E2E / "pose_bundle"
 
 
@@ -283,6 +286,10 @@ def main() -> int:
     ap.add_argument("--max-step", type=float, default=0.15,
                     help="metres; `track_one` refines frame to frame, so the chain "
                          "must not jump further than a tracker can follow")
+    ap.add_argument("--exclude-fused-stride", type=int, default=0,
+                    help="skip frames whose index is a multiple of N — the frames "
+                         "e2e_tum.py fused at --stride N — so every bundle frame is HELD "
+                         "OUT from building the mesh. 0 (default) keeps the old behaviour")
     ap.add_argument("--scan-stride", type=int, default=1,
                     help="scan every Nth frame when ranking visibility; the scan reads "
                          "depth only, so 1 is affordable on an 859-frame sequence")
@@ -398,6 +405,9 @@ def main() -> int:
     scored, aligned = [], []
     for index, (stamp, rel) in enumerate(rgb):
         if index % args.scan_stride:
+            continue
+        # A frame the mesh was fused from cannot test the mesh: its depth is already in it.
+        if args.exclude_fused_stride and index % args.exclude_fused_stride == 0:
             continue
         j = int(np.argmin(np.abs(stamps - stamp)))
         k = int(np.argmin(np.abs(dstamps - stamp)))
@@ -529,6 +539,8 @@ def main() -> int:
             "best_fraction": best,
             "baseline_span_m": span,
             "mask": "splat+close" if args.splat_mask else "depth-verified dense fill",
+            "held_out_from_fusion": bool(args.exclude_fused_stride),
+            "excluded_fused_stride": args.exclude_fused_stride,
         },
         "frames": records,
     }

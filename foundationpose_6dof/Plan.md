@@ -326,3 +326,37 @@ mustard0's, and whether the scorer ranks any iterate above `register()`'s best.
 and the depth check's mask was built from depth-agreeing points. Independent confirmation
 needs held-out frames — that is P2.
 
+### Result (P1, v19) — read against the rule above, which was not edited
+
+**Checks before reading.** Convention: the job's map-pose residual on frame 0 is
+**3.77 cm**, reproducing the local measurement exactly. Equivalence: 1 × (5 iterations) and
+5 × (1 iteration) agree to **0.00 cm, 0.00°**. Not void.
+
+| k | step | step / half-diameter | vs map | depth residual | coverage | score |
+|---|---|---|---|---|---|---|
+| 0 (map pose) | — | — | — | 3.77 cm | 93% | 134.00 |
+| **1** | 9.78 cm | **0.115** | 9.78 cm | **2.46 cm** | 97% | 134.03 — **passes** |
+| 2 | 16.04 cm | 0.188 | 24.66 cm | 19.53 cm | 89% | 133.97 — first failure |
+| 3 | 30.43 cm | 0.356 | 54.52 cm | 49.85 cm | 71% | 133.97 |
+| 5 | 4.12 cm | 0.048 | 77.33 cm | 85.24 cm | 31% | 133.94 — v18's endpoint |
+| 10 | 3.93 cm | 0.046 | 89.14 cm | 93.94 cm | 38% | 134.03 |
+| `register()` best | | | | | | **134.44** |
+| *mustard0 from its CAD pose, k = 1* | *0.056 cm* | *0.0057* | | | | |
+
+**Iterate 1 passes; the first failure is at k = 2. By the registered row: divergence.**
+The first update even *improves* agreement with the depth (3.77 → 2.46 cm). Later updates
+compound. That answers the review's question: v18's 77 cm was not a wrong first prediction.
+
+**The iteration = 1 arm decides — refused.** Tracking 8 frames with one update per frame:
+frame 0 passes (the update above), then the error compounds across frames instead —
+19.9 cm, 54.8 cm, 90.4 cm, and by frame 5 the mesh covers no measured pixel. Gate **1/8**.
+So "map prior + one update per frame" is **not** a path into the chain.
+
+**Descriptive, no decision weight.** From an almost-correct start the chair's first step is
+**0.115 half-diameters**; mustard0's, from its correct start, is **0.0057** — about 20×
+smaller. And the scorer barely separates the iterates (133.94–134.03) while ranking
+`register()`'s pose (134.44) above every one of them, including the iterate that fits the
+depth best. On this object, the refiner's steps are an order of magnitude too large to
+converge and the scorer cannot tell good from bad. Both point the same way as v18; neither
+is a cause established by a control.
+

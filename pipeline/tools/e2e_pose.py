@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,7 +40,9 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-E2E = ROOT / "pipeline/assets/e2e"
+# E2E_DIR lets a second scene run the same stages without overwriting the first
+# (the chair bundle and its Kaggle results are keyed to what is in the default).
+E2E = Path(os.environ.get("E2E_DIR", ROOT / "pipeline/assets/e2e"))
 BUNDLE = E2E / "pose_bundle"
 NS_PER_S = 10 ** 9
 

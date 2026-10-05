@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-BUNDLE = ROOT / "pipeline/assets/e2e/pose_bundle"
+BUNDLE = Path(os.environ.get("E2E_DIR", ROOT / "pipeline/assets/e2e")) / "pose_bundle"
 KAGGLE = ROOT / "foundationpose_6dof/.kaggle"
 SLUG = "foundationpose-nvdiffrast"
 DATASET = "foundationpose-bundle"

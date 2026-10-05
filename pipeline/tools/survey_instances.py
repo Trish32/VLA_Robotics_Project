@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -37,7 +38,9 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-E2E = ROOT / "pipeline/assets/e2e"
+# E2E_DIR lets a second scene run the same stages without overwriting the first
+# (the chair bundle and its Kaggle results are keyed to what is in the default).
+E2E = Path(os.environ.get("E2E_DIR", ROOT / "pipeline/assets/e2e"))
 
 
 def main(argv=None) -> int:
@@ -62,7 +65,9 @@ def main(argv=None) -> int:
     labelled = json.load(open(E2E / "labelled.json"))["instances"]
     masks = np.load(E2E / "instance_masks.npz")["masks"]
     points = np.asarray(o3d.io.read_point_cloud(fuse["ply"]).points)
-    target = json.load(open(E2E / "ground.json"))["target"]
+    # The survey is how a target gets CHOSEN on a new scene, so it cannot require one.
+    ground = E2E / "ground.json"
+    target = json.load(open(ground))["target"] if ground.exists() else None
 
     keep = [i for i, r in enumerate(labelled) if r.get("label")]
     observations = from_openmask3d(

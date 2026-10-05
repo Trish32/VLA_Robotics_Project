@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -35,7 +36,9 @@ sys.path.insert(0, str(ROOT))
 
 SEQ = ROOT / "orbslam3_baseline/data/rgbd_dataset_freiburg1_xyz"
 TRAJ = ROOT / "orbslam3_baseline/data/trajectory_orbslam3.txt"
-OUT = ROOT / "pipeline/assets/e2e"
+# E2E_DIR lets a second scene run the same stages without overwriting the first
+# (the chair bundle and its Kaggle results are keyed to what is in the default).
+OUT = Path(os.environ.get("E2E_DIR", ROOT / "pipeline/assets/e2e"))
 
 # Intrinsics are PER CAMERA, not per dataset: freiburg1 and freiburg3 were recorded on
 # different Kinects and upstream ships TUM1.yaml and TUM3.yaml separately. Fusing fr3

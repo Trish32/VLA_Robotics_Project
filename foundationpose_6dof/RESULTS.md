@@ -63,6 +63,28 @@ bundle took consecutive frames. A tracker that ignored its input entirely would 
 still across them, so the check had almost no leverage to begin with. The rebuilt bundle
 spans **20.8 cm**, and over it the spread is **33.17 cm** — the 2.08 cm is withdrawn.
 
+## Iteration trace: one refinement update at a time · MEASURED (Kaggle T4, v19)
+
+Rule committed in `8c1bf07` before launch. In-job convention check reproduces the local
+3.77 cm; 1×5 and 5×1 iterations agree to 0.00 cm.
+
+| k | step | step / half-diameter | vs map | depth residual | coverage | score |
+|---|---|---|---|---|---|---|
+| 0 (map pose) | — | — | — | 3.77 cm | 93% | 134.00 |
+| **1** | 9.78 cm | **0.115** | 9.78 cm | **2.46 cm** | 97% | 134.03 — **passes** |
+| 2 | 16.04 cm | 0.188 | 24.66 cm | 19.53 cm | 89% | 133.97 — first failure |
+| 3 | 30.43 cm | 0.356 | 54.52 cm | 49.85 cm | 71% | 133.97 |
+| 5 | 4.12 cm | 0.048 | 77.33 cm | 85.24 cm | 31% | 133.94 — v18's endpoint |
+| 10 | 3.93 cm | 0.046 | 89.14 cm | 93.94 cm | 38% | 134.03 |
+| `register()` best | | | | | | **134.44** |
+| *mustard0 from its CAD pose, k = 1* | *0.056 cm* | *0.0057* | | | | |
+
+**Divergence, not a wrong first step** — iterate 1 improves the depth fit and passes;
+the first failure is iterate 2. **One update per frame does not rescue it:** tracked over
+8 frames, gate 1/8, off the object by frame 5. The chair's first step is ~20× the bottle's
+in normalised units, and the scorer ranks `register()`'s pose above every iterate.
+[Plan.md](Plan.md).
+
 ## Map prior: start FoundationPose from our map's pose · MEASURED (Kaggle T4, v18)
 
 Rule committed in `bd5ebf3` before launch. Locally, beforehand: our mesh at the map's pose
