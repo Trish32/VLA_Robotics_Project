@@ -200,3 +200,45 @@ fuses TUM `fr1/xyz` — a static desk scene with compact rigid objects, ORB-SLAM
 **1.03 cm** — so a target there changes object *and* trajectory quality together. That is
 not a clean separation, and it is said here so it is not later read as one.
 
+## Map prior (v18) — decision rule, committed before the run is launched
+
+**What prompted it, measured locally first.** Our chair mesh placed at the pose our map
+gives it reproduces the measured depth to **1.3–6.0 cm** (median under the mask; median
+over the 8 frames **3.87 cm**) and covers 92–98% of the mask. FoundationPose's `register()`
+pose misses the *same pixels* by **74–166 cm**. A pose that explains the data exists;
+`register()` does not choose it. (The mask is built from depth-agreeing points, so the
+map pose's absolute residual is partly by construction — the comparison holds because both
+poses are scored on identical pixels.)
+
+**Gate change, already made.** `e2e_pose.py` now renders the mesh at each candidate pose
+and refuses if it disagrees with measured depth by more than **8 cm** (median under the
+mask) — the bundle's existing `--depth-tol`, not a value tuned to the numbers above. It
+is the gate's only check that needs neither the map nor the segmentation centroid. For a
+pose *initialised from* the map, translation/rotation agreement with the map is not
+independent evidence, so it is accepted only if this check is available.
+
+**Q1 — diagnosis (FoundationPose's own scorer, one batch).** Score `register()`'s best
+and the map pose after one refinement, together.
+- map pose scores higher → `register()`'s **search** failed;
+- `register()`'s pose scores higher → the **scorer** is fooled by this object.
+
+**Q2 — what goes into the chain (the gate decides, not the scorer).** Refine from the map
+pose, track the 8 frames from there, write `pose_result_prior.json`, run the gate on it.
+
+| gate on the prior-tracked poses | median depth residual vs the map pose's 3.87 cm | reading | next |
+|---|---|---|---|
+| accepted | **lower** | FoundationPose holds a correct start and sharpens it | wire the map-prior path into the chain — the first accepted 6-DoF pose |
+| accepted | equal or higher | it holds the start but adds no precision on a static object | wire it as a tracker only; claim no precision gain |
+| refused | — | its refiner cannot hold even a correct start on this object | object-scale limit; change target |
+
+Q1 does not override Q2: the depth check is independent of FoundationPose's networks,
+the scorer is not.
+
+**Void:** the prior section fails to run, the result's fingerprint does not match, or the
+gate's depth check is unavailable.
+
+**Limits, stated now.** An accepted prior-initialised pose is consistent with the depth
+the camera measured; it does not independently confirm the map's rotation beyond what
+that depth constrains. The object is static, so this measures holding and sharpening a
+pose — tracking a *moving* object, the case FoundationPose exists for, is untested.
+

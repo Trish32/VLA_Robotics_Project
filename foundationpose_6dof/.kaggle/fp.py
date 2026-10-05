@@ -17,7 +17,7 @@
 # load, which is the Fidelity Rule's first half and cannot be checked on the Mac.
 import os, subprocess, sys, torch, traceback
 
-KERNEL_VERSION = "v17-coverage-sweep"
+KERNEL_VERSION = "v18-map-prior"
 
 # Stamped by tools/push_kaggle_pose.py at push time with the fingerprint of the bundle
 # it uploaded. The job then asserts that the dataset Kaggle actually mounted is that one.
@@ -40,6 +40,13 @@ EXPECTED_FINGERPRINT = None          # replaced at push time; None = pushed by h
 # poisson_mesh` -- and `foundationpose_6dof/mesh_control.py`. The mesh control below asks
 # whether OUR mesh pipeline is the limit, so it must run our code, not a re-typing of it.
 OURWAY_SOURCE = None
+
+# v17 answered the mesh control; v18 does not repeat it. Flip to re-run.
+RUN_MESH_CONTROL = False
+
+
+class _Skipped(Exception):
+    pass
 
 print(f"=== {KERNEL_VERSION} ===", flush=True)
 
@@ -374,6 +381,96 @@ except Exception:
     print("RESULT: REGISTER_FAILED")
 
 
+# ---------------------------------------------------------------------------- map prior
+# Measured locally before this run: OUR chair mesh, placed at the pose OUR MAP gives it,
+# reproduces the measured depth to 1.3-6.0 cm (median under the mask) and covers 92-98% of
+# the mask. FoundationPose's register() pose misses the same pixels by 74-166 cm. So a
+# pose that explains the data exists and register() does not choose it.
+#
+# Two questions, both against FoundationPose's own networks:
+#   Q1  SCORER: given the map pose (refined) and register()'s best in ONE batch, which
+#       does its scorer prefer? Prefers the map pose -> register()'s SEARCH failed.
+#       Prefers its own -> the scorer itself is fooled by this object.
+#   Q2  PRIOR: refine from the map pose and track from there. Written out as
+#       pose_result_prior.json with initialization = "map_prior", for the stage-4 gate.
+#
+# Conventions, because getting them wrong would silently score a shifted pose: upstream
+# keeps poses relative to the CENTRED mesh and returns internal @ T(-centre)
+# (estimater.py:233, :268). Our map pose refers to the mesh as supplied, so internally it
+# is map @ T(+centre). register() erodes and bilateral-filters depth before refining and
+# scoring; the same is done here.
+print(f"\n{'='*70}\n[map prior: score and refine from our map's pose]\n{'='*70}", flush=True)
+try:
+    from Utils import erode_depth, bilateral_filter_depth, depth2xyzmap
+
+    tf_c = est.get_tf_to_centered_mesh().data.cpu().numpy()      # T(-centre)
+    to_int = np.linalg.inv(tf_c)                                 # T(+centre)
+    f0 = meta["frames"][0]
+    P_map = np.eye(4)
+    P_map[:3, :3] = np.asarray(f0["R_world_to_cam"])
+    P_map[:3, 3] = f0["mesh_origin_cam"]
+    map_int = (P_map @ to_int).astype(np.float32)
+    fp_int = est.poses[0].data.cpu().numpy().reshape(4, 4).astype(np.float32)
+
+    rgb0, depth0, mask0 = load(0)
+    d_p = erode_depth(depth0, radius=2, device="cuda")
+    d_p = bilateral_filter_depth(d_p, radius=2, device="cuda")
+    xyz0 = depth2xyzmap(d_p, K)
+
+    ref, _ = est.refiner.predict(
+        mesh=est.mesh, mesh_tensors=est.mesh_tensors, rgb=rgb0, depth=d_p, K=K,
+        ob_in_cams=map_int[None], normal_map=None, xyz_map=xyz0, glctx=est.glctx,
+        mesh_diameter=est.diameter, iteration=5, get_vis=False)
+    ref_int = ref.data.cpu().numpy().reshape(4, 4).astype(np.float32)
+
+    batch = np.stack([fp_int, map_int, ref_int])
+    sc, _ = est.scorer.predict(
+        mesh=est.mesh, rgb=rgb0, depth=d_p, K=K, ob_in_cams=batch, normal_map=None,
+        mesh_tensors=est.mesh_tensors, glctx=est.glctx, mesh_diameter=est.diameter,
+        get_vis=False)
+    sc = np.asarray(sc.float().cpu()).ravel()
+
+    def rdeg(A, B):
+        return float(np.degrees(np.arccos(np.clip((np.trace(A[:3, :3] @ B[:3, :3].T) - 1) / 2, -1, 1))))
+
+    moved_r = rdeg(ref_int, map_int)
+    moved_t = float(np.linalg.norm(ref_int[:3, 3] - map_int[:3, 3]) * 100)
+    print(f"  scorer, one batch:  register() best {sc[0]:.4f}   map raw {sc[1]:.4f}   "
+          f"map refined {sc[2]:.4f}", flush=True)
+    print(f"  Q1 -> scorer prefers "
+          f"{'the MAP pose (search failed)' if sc[2] > sc[0] else 'register() pose (scorer fooled)'}",
+          flush=True)
+    print(f"  refinement moved the map pose {moved_r:.2f} deg, {moved_t:.2f} cm", flush=True)
+
+    est.pose_last = torch.as_tensor(ref_int, device="cuda", dtype=torch.float)
+    track_p = [ref_int @ tf_c]
+    for i in range(1, len(meta["frames"])):
+        r, d, _ = load(i)
+        track_p.append(np.asarray(est.track_one(rgb=r, depth=d, K=K, iteration=2)).reshape(4, 4))
+    world_p = np.array([(np.array(meta["frames"][i]["cam_to_world"]) @ T)[:3, 3]
+                        for i, T in enumerate(track_p)])
+    spread_p = float(np.linalg.norm(world_p - world_p.mean(axis=0), axis=1).max())
+    print(f"  tracked {len(track_p)} frames from the prior; world-frame spread "
+          f"{spread_p*100:.2f} cm", flush=True)
+    json.dump({
+        "ok": True, "source": f"kaggle:foundationpose-nvdiffrast {KERNEL_VERSION}",
+        "initialization": "map_prior",
+        "target": meta["target"], "label": meta["label"],
+        "bundle_fingerprint": meta.get("fingerprint"),
+        "sequence": meta["sequence"],
+        "poses_cam_obj": [np.asarray(T).tolist() for T in track_p],
+        "world_spread_cm": spread_p * 100,
+        "scores_one_batch": {"register_best": float(sc[0]), "map_raw": float(sc[1]),
+                             "map_refined": float(sc[2])},
+        "scorer_prefers_map": bool(sc[2] > sc[0]),
+        "refine_moved": {"rotation_deg": moved_r, "translation_cm": moved_t},
+    }, open("/kaggle/working/pose_result_prior.json", "w"), indent=1)
+    print("RESULT: PRIOR_OK", flush=True)
+except Exception:
+    traceback.print_exc()
+    print("RESULT: PRIOR_FAILED", flush=True)
+
+
 # ---------------------------------------------------------------------------- control
 # The Fidelity Rule test, and it is deliberately LAST so it cannot take the primary
 # result down with it.
@@ -500,6 +597,8 @@ except Exception:
 # ---------------------------------------------------------------------------------------
 print(f"\n{'='*70}\n[mesh control: mustard0 with a mesh built our way]\n{'='*70}", flush=True)
 try:
+    if not RUN_MESH_CONTROL:
+        raise _Skipped()
     if OURWAY_SOURCE is None:
         raise SystemExit("OURWAY_SOURCE was not stamped -- push with tools/push_kaggle_pose.py")
     ow = {}
@@ -653,6 +752,8 @@ try:
         torch.cuda.empty_cache()
     json.dump(out, open("/kaggle/working/control_mesh.json", "w"), indent=1)
     print("RESULT: MESH_CONTROL_OK", flush=True)
+except _Skipped:
+    print("  skipped -- answered in v17 (RUN_MESH_CONTROL = False)", flush=True)
 except BaseException:
     traceback.print_exc()
     print("RESULT: MESH_CONTROL_FAILED", flush=True)

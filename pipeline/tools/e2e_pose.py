@@ -98,11 +98,15 @@ class PoseCheck:
     behind_surface_cm: float
     accepted: bool
     reasons: list[str] = field(default_factory=list)
+    depth_residual_cm: float | None = None
 
     def as_row(self) -> str:
         mark = "ok  " if self.accepted else "FAIL"
+        dz = ("   n/a" if self.depth_residual_cm is None
+              else f"{self.depth_residual_cm:6.2f}")
         return (f"  {mark} frame {self.frame}:  t {self.translation_cm:7.2f} cm   "
-                f"R {self.rotation_deg:6.2f} deg   behind {self.behind_surface_cm:7.2f} cm")
+                f"R {self.rotation_deg:6.2f} deg   behind {self.behind_surface_cm:7.2f} cm   "
+                f"|dz| {dz} cm")
 
 
 def check_pose(
@@ -116,6 +120,8 @@ def check_pose(
     max_translation_cm: float,
     max_rotation_deg: float,
     depth_margin_cm: float = 10.0,
+    depth_residual_cm: float | None = None,
+    max_depth_residual_cm: float = 8.0,
 ) -> PoseCheck:
     """Corroborate one pose against the map and the depth image.
 
@@ -149,9 +155,51 @@ def check_pose(
     if depth_bad:
         reasons.append(f"origin {behind_cm:.1f} cm behind the measured surface, which is "
                        f"only {depth_span_m*100:.1f} cm deep")
+    # The one check here that needs NEITHER our map NOR the segmentation's centroid: does
+    # the mesh, rendered at this pose, reproduce the depth the camera measured under the
+    # mask? A pose can sit at the right distance and still be turned so that the surface
+    # it predicts is nowhere near the one observed. On chair_4 the map pose reads
+    # 1.3-6.0 cm and FoundationPose's register() pose 74-166 cm on the SAME pixels.
+    # 8 cm is the bundle's existing corroboration tolerance (`--depth-tol`), not a value
+    # tuned to those numbers.
+    if depth_residual_cm is not None and depth_residual_cm > max_depth_residual_cm:
+        reasons.append(f"rendered mesh disagrees with measured depth by "
+                       f"{depth_residual_cm:.1f} cm (median under the mask) > "
+                       f"{max_depth_residual_cm:.0f} cm")
 
     return PoseCheck(frame=frame, translation_cm=translation_cm, rotation_deg=rotation_deg,
-                     behind_surface_cm=behind_cm, accepted=not reasons, reasons=reasons)
+                     behind_surface_cm=behind_cm, accepted=not reasons, reasons=reasons,
+                     depth_residual_cm=depth_residual_cm)
+
+
+def depth_residuals_cm(poses, frames, bundle: Path, depth_scale: float, K) -> list[float | None]:
+    """Per frame: median |rendered mesh depth - measured depth| under the mask, in cm.
+
+    None where it cannot be computed (no open3d, missing files) — the check is then
+    skipped and that is printed, never silently passed.
+    """
+    try:
+        import cv2
+        import open3d as o3d
+
+        sys.path.insert(0, str(ROOT))
+        from foundationpose_6dof.mesh_control import track_depth_residual
+    except ImportError:
+        return [None] * len(poses)
+    mesh = o3d.io.read_triangle_mesh(str(bundle / "mesh.obj"))
+    V, F = np.asarray(mesh.vertices), np.asarray(mesh.triangles)
+    out: list[float | None] = []
+    for T, rec in zip(poses, frames):
+        i = rec["frame"]
+        d = cv2.imread(str(bundle / f"depth_{i:03d}.png"), cv2.IMREAD_ANYDEPTH)
+        m = cv2.imread(str(bundle / f"mask_{i:03d}.png"), cv2.IMREAD_GRAYSCALE)
+        if d is None or m is None:
+            out.append(None)
+            continue
+        dm = np.where(m > 0, d.astype(np.float32) / depth_scale, 0.0)
+        r = track_depth_residual(V, F, np.asarray(T, float), np.asarray(K, float), dm)
+        out.append(None if not np.isfinite(r) else r * 100)
+    return out
 
 
 def main() -> int:
@@ -161,6 +209,10 @@ def main() -> int:
                     help="FoundationPose output; written by the Kaggle kernel")
     ap.add_argument("--max-translation-cm", type=float, default=10.0)
     ap.add_argument("--max-rotation-deg", type=float, default=30.0)
+    ap.add_argument("--max-depth-residual-cm", type=float, default=8.0,
+                    help="median |rendered mesh depth - measured depth| under the mask; "
+                         "8 cm is the bundle's existing --depth-tol")
+    ap.add_argument("--out", type=Path, default=E2E / "pose.json")
     ap.add_argument("--force", action="store_true",
                     help="write the refined pose even if the checks fail (records that "
                          "it was forced, so nothing downstream can mistake it for clean)")
@@ -222,14 +274,20 @@ def main() -> int:
         depth_stats = [(None, 0.0)] * len(frames)
         print("[4 pose ]  no cv2 — skipping the depth check")
 
+    residuals = depth_residuals_cm(poses, frames, BUNDLE, meta["depth_scale"], meta["K"])
+    if all(r is None for r in residuals):
+        print("[4 pose ]  depth-consistency check unavailable (needs open3d and the bundle "
+              "images) — SKIPPED, not passed")
     checks = [
         check_pose(T, frame=rec["frame"],
                    origin_cam=rec["mesh_origin_cam"],
                    R_world_to_cam=np.asarray(rec["R_world_to_cam"], float),
                    depth_median_m=dm, depth_span_m=span,
                    max_translation_cm=args.max_translation_cm,
-                   max_rotation_deg=args.max_rotation_deg)
-        for T, rec, (dm, span) in zip(poses, frames, depth_stats)
+                   max_rotation_deg=args.max_rotation_deg,
+                   depth_residual_cm=r,
+                   max_depth_residual_cm=args.max_depth_residual_cm)
+        for T, rec, (dm, span), r in zip(poses, frames, depth_stats, residuals)
     ]
     for c in checks:
         print(c.as_row())
@@ -245,10 +303,25 @@ def main() -> int:
         print(f"[4 pose ]  tracker self-consistency {result['world_spread_cm']:.2f} cm "
               f"(says it is steady, not that it is right)")
 
-    # The estimator's own self-agreement, which needs neither our map nor ground truth.
-    agree_ok, agree_detail = check_agreement(result.get("agreement"))
-    print(f"[4 pose ]  hypothesis agreement: {'ok' if agree_ok else 'SCATTERED'} — "
-          f"{agree_detail}")
+    # A pose initialised FROM our map cannot corroborate the map: translation and rotation
+    # agreeing with it is partly built in. Only the depth-consistency check is evidence
+    # then, so it must be available, and there are no register() hypotheses to check.
+    prior = result.get("initialization") == "map_prior"
+    if prior:
+        agree_ok = all(c.depth_residual_cm is not None for c in checks)
+        agree_detail = ("initialised from the map: translation/rotation agreement is NOT "
+                        "independent evidence; only the depth-consistency check is"
+                        + ("" if agree_ok else " — and it is unavailable, so refused"))
+        print(f"[4 pose ]  {agree_detail}")
+    else:
+        # The estimator's own self-agreement, which needs neither our map nor ground truth.
+        agree_ok, agree_detail = check_agreement(result.get("agreement"))
+        print(f"[4 pose ]  hypothesis agreement: {'ok' if agree_ok else 'SCATTERED'} — "
+              f"{agree_detail}")
+    rs = [c.depth_residual_cm for c in checks if c.depth_residual_cm is not None]
+    if rs:
+        print(f"[4 pose ]  depth consistency: median {np.median(rs):.2f} cm over "
+              f"{len(rs)} frames (limit {args.max_depth_residual_cm:.0f} cm)")
 
     accepted = n_ok > len(checks) // 2 and agree_ok
     refined = None
@@ -305,7 +378,10 @@ def main() -> int:
         "median_translation_cm": float(np.median([c.translation_cm for c in checks])),
         "median_rotation_deg": float(np.median([c.rotation_deg for c in checks])),
         "thresholds": {"translation_cm": args.max_translation_cm,
-                       "rotation_deg": args.max_rotation_deg},
+                       "rotation_deg": args.max_rotation_deg,
+                       "depth_residual_cm": args.max_depth_residual_cm},
+        "initialization": result.get("initialization", "register"),
+        "median_depth_residual_cm": float(np.median(rs)) if rs else None,
         "agreement_ok": bool(agree_ok), "agreement_detail": agree_detail,
         "agreement": result.get("agreement"),
         "per_frame": [vars(c) for c in checks],
@@ -314,9 +390,9 @@ def main() -> int:
         # For inspection and for the demo only. Never a substitute for `pose_world`.
         "rejected_pose_world": None if accepted else T_world_any.tolist(),
         "best_frame": int(best_any.frame),
-    }, open(E2E / "pose.json", "w"), indent=1)
+    }, open(args.out, "w"), indent=1)
 
-    print("\n           -> pose.json")
+    print(f"\n           -> {args.out.name}")
     print("[next  ]  stage 5: conda run -n openmask3d_vl python pipeline/tools/e2e_ground.py")
     return 0 if accepted else 1
 

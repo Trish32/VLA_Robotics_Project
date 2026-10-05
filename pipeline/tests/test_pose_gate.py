@@ -174,3 +174,69 @@ def test_agreement_inverts_the_score_based_reading():
                "within_1pct": 91}
     assert mustard["within_1pct"] > ours["within_1pct"]      # flatter scores
     assert check_agreement(mustard)[0] and not check_agreement(ours)[0]
+
+
+# ---------------------------------------------------------------- depth consistency
+
+def _gate_dz(dz, limit=8.0, **kw):
+    return check_pose(pose(), frame=0, origin_cam=np.array([0, 0, 2.0]),
+                      R_world_to_cam=np.eye(3), depth_median_m=None, depth_span_m=1.0,
+                      max_translation_cm=10.0, max_rotation_deg=30.0,
+                      depth_residual_cm=dz, max_depth_residual_cm=limit, **kw)
+
+
+def test_depth_consistency_admits_a_pose_that_explains_the_depth():
+    c = _gate_dz(3.0)
+    assert c.accepted and c.depth_residual_cm == 3.0
+
+
+def test_depth_consistency_refuses_an_otherwise_perfect_pose():
+    """The only check that needs neither the map nor the segmentation centroid.
+
+    A pose can agree with the map on every number the map supplies and still predict a
+    surface the camera did not see; this is the check that catches it.
+    """
+    c = _gate_dz(12.0)
+    assert not c.accepted
+    assert any("measured depth" in r for r in c.reasons)
+
+
+def test_depth_consistency_unavailable_is_skipped_not_failed():
+    """Older callers pass nothing; the gate must behave exactly as before for them."""
+    c = _gate_dz(None)
+    assert c.accepted and c.depth_residual_cm is None
+
+
+def test_depth_consistency_threshold_is_the_bundles_corroboration_tolerance():
+    assert _gate_dz(7.99).accepted
+    assert not _gate_dz(8.01).accepted
+
+
+@pytest.mark.parametrize("map_dz, fp_dz", [(3.77, 74.27), (6.03, 98.76), (1.32, 166.43)])
+def test_chair4_map_pose_passes_and_register_pose_fails_on_depth(map_dz, fp_dz):
+    """Measured on the real bundle, same pixels: our map's pose vs FoundationPose's."""
+    assert _gate_dz(map_dz).accepted
+    assert not _gate_dz(fp_dz).accepted
+
+
+def test_depth_residuals_on_the_real_bundle():
+    """End to end on the files the gate reads, when they and open3d are present."""
+    pytest.importorskip("open3d")
+    pytest.importorskip("cv2")
+    import json
+    from pathlib import Path
+
+    from pipeline.tools.e2e_pose import BUNDLE, depth_residuals_cm
+
+    if not (BUNDLE / "bundle.json").exists():
+        pytest.skip("no pose bundle on disk")
+    meta = json.load(open(BUNDLE / "bundle.json"))
+    frames = meta["frames"]
+    map_poses = []
+    for f in frames:
+        T = np.eye(4)
+        T[:3, :3] = np.asarray(f["R_world_to_cam"])
+        T[:3, 3] = f["mesh_origin_cam"]
+        map_poses.append(T)
+    r = depth_residuals_cm(map_poses, frames, BUNDLE, meta["depth_scale"], meta["K"])
+    assert all(x is not None and x < 8.0 for x in r)

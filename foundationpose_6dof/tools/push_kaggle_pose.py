@@ -259,6 +259,16 @@ def main(argv=None) -> int:
     api.kernels_output(f"{username}/{SLUG}", str(out))
     print(f"[done]  output in {out}")
 
+    # The map-prior result travels under the same fingerprint discipline as the main one.
+    prior = out / "pose_result_prior.json"
+    if prior.exists():
+        got_p = json.load(open(prior)).get("bundle_fingerprint")
+        if got_p == meta["fingerprint"]:
+            shutil.copy2(prior, BUNDLE / "pose_result_prior.json")
+            print(f"[done]  map-prior result copied (fingerprint {got_p})")
+        else:
+            print(f"[done]  REFUSED to copy the map-prior result: {got_p} != {meta['fingerprint']}")
+
     result = out / "pose_result.json"
     if result.exists():
         got = json.load(open(result)).get("bundle_fingerprint")
