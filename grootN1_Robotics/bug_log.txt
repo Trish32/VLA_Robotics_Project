@@ -247,3 +247,128 @@ VERIFIED MILESTONES
 2026-08-17  Official nvidia/GR00T-N1.6-3B loads **0 missing / 0 unexpected / 0 shape
             mismatch** — 1106 tensors, 3.29B params — into the adapted model built with
             sdpa + fp32 on CPU (tools/load_checkpoint.py). Fidelity gate passed.
+
+
+[7] Language-conditioning test compared different flow-matching noise
+-------------------------------------------------------------------
+Date:        2026-10-04
+Fingerprint: test_language_conditioning_changes_the_action called get_action twice
+             without matching RNG state and accepted any action difference.
+Cause:       Flow matching samples its starting noise. Different random samples can
+             change actions even if the language path is disconnected.
+Fix:         fork_rng + manual_seed(17) around both calls, holding sampled noise fixed.
+Before/after: Old passing test did not isolate language. Corrected test passes on the
+             real checkpoint; all four end-to-end tests pass. No success metric claimed.
+
+[8] Current official Objaverse assets lack the old GR1 bounding sites
+-------------------------------------------------------------------
+Date:        2026-10-04
+Fingerprint: AttributeError: 'NoneType' object has no attribute 'get' in
+             kitchen_object_utils.sample_kitchen_object, reading bottom_site.
+Cause:       The old Box Objaverse URL returns 404. The official HF mirror uses
+             reg_bbox geometry metadata rather than three legacy site fields.
+Fix:         asset_compat.legacy_bounding_sites derives non-physical sites from the
+             authoritative unrotated bounding box; pristine XML and hashes retained.
+             No source, mesh, physical geom, contact parameter or inertia is patched.
+Before/after: Seed-0 task construction failed at site lookup; after normalising 914
+             assets, construction advances to a separate missing fixture mesh [9].
+             Six tests pass, including MuJoCo physical-model equality; no task metric.
+
+[9] Official current fixture archive is incomplete for the pinned GR1 task
+------------------------------------------------------------------------
+Date:        2026-10-04
+Fingerprint: MuJoCo cannot open fixtures/toasters/basic_popup_2/visuals/model_1.obj
+             while building seed 0 of PnPCanToDrawerClose.
+Cause:       Pinned fixture XML references old meshes absent from the current official
+             HF archive; its original Box fixtures download URL also returns 404.
+Fix:         Supplement missing files from jianzhang96/robocasa-assets at
+             866be1d2158a6486af2211156b83eeaeb031f54f, fixtures.zip SHA256
+             bd993f47d0ae5f5f3d89cf5f9fc28d55ceb878359c49136d30052de0bb1ef231.
+             All 90 common model XML files equal pinned upstream byte-for-byte.
+             Community provenance and added files are recorded; scene is unchanged.
+Before/after: 468 missing references -> 0 missing of 23,707; 504 files supplemented.
+             Real GR00T/GR1 two-step smoke passes. No task success rate is emitted.
+
+[10] reset(seed) does not seed the simulator's independent scene generator
+------------------------------------------------------------------------
+Date:        2026-10-04
+Fingerprint: RoboCasaEnv.reset reseeds np.random only; robosuite's constructor creates
+             self.rng = np.random.default_rng(seed), used for object/layout sampling.
+Cause:       Upstream get_gym_env constructs with seed=None; subsequent seeded reset
+             does not retroactively seed the independent Generator.
+Fix:         Baseline constructs the same official gym environment with the episode
+             seed, once per episode. No task constants or sampling rules are changed.
+Before/after: Constructor used seed=None; adapter forwards the recorded episode seed.
+             Two independent real seed-0 smoke runs now have identical observation
+             hashes and action/state traces; maximum decoded action difference is 0.
+
+[11] Asset extraction overwrote two pinned upstream model definitions
+--------------------------------------------------------------------
+Date:        2026-10-04
+Fingerprint: git diff after unpacking current official fixture mirror shows changed
+             light_switches/white_wide_switch and outlets/simple_white model.xml.
+Cause:       Unconditional ZIP extraction replaced existing pinned files with newer
+             mirror definitions; this silently changes the fidelity reference.
+Fix:         Restore both files from the pinned commit. Extraction now validates all
+             paths/symlinks first and only adds missing files, preserving existing XML.
+Before/after: Two tracked source diffs -> zero. Three extraction tests pass; legacy
+             archive's 90 shared XML definitions all match the pinned source.
+
+[12] Checkpoint shape gate printed failure but returned a successful exit code
+----------------------------------------------------------------------------
+Date:        2026-10-04
+Fingerprint: tools/load_checkpoint.py prints GATE FAILED yet exits 0.
+Cause:       The reporting CLI omitted a nonzero exit on missing/unexpected/shape errors.
+Fix:         Exit 1 on any mismatch, so cloud evaluation stops before scoring a model
+             that fails the checkpoint contract.
+Before/after: Failed shape/key checks could continue -> subprocess check=True stops.
+             This fixes gate control flow, not a model metric.
+
+[13] Kaggle's system Python 3.13 is outside pinned upstream's supported range
+--------------------------------------------------------------------------
+Date:        2026-10-04
+Fingerprint: Cloud v1 fails at python -m venv / ensurepip; its runner is Python 3.13.
+Cause:       Assuming the Kaggle interpreter still satisfies GR00T's >=3.10,<3.13.
+Fix:         uv 0.8.22 creates isolated managed CPython 3.11.13, then installs official
+             torch 2.7.1/cu128 and real pinned simulator dependencies there.
+Before/after: V1 fails in 5 seconds -> v2 installs the complete model/simulator stack
+             and reaches pytest collection. This is cloud-verified setup, not a metric.
+
+[14] Source upload allowlist missed an imported test helper
+---------------------------------------------------------
+Date:        2026-10-04
+Fingerprint: Cloud v2 pytest collection: No module named 'check_attention_packing'.
+Cause:       Local tests found the helper in the full working tree, but the source-only
+             Kaggle bundle omitted grootN1_Robotics/tools/check_attention_packing.py.
+Fix:         Add the helper to the explicit allowlist. Before every stage, extract the
+             actual bundle to a temporary directory and run its tests in isolation.
+Before/after: Cloud collection fails -> isolated corrected bundle: 48 passed, 2 skipped
+             (no MPS and no uploaded checkpoint config). No policy result was measured.
+
+[15] Lossless NPZ replay lost the language list container
+-------------------------------------------------------
+Date:        2026-10-05
+Fingerprint: Real captured-decision replay fails Gr00tSimPolicyWrapper.check_observation:
+             language must be a tuple or list, but NPZ loading returns numpy.ndarray.
+Cause:       Saving values without the original container schema preserved text bytes
+             while changing the official input interface during reconstruction.
+Fix:         Record per-key ndarray/list/tuple containers in the capture manifest and
+             reconstruct them on load. Keep the official policy wrapper unchanged.
+Before/after: Replay raises before inference -> actual CPU checkpoint replay matches
+             initial noise, complete decoded action chunk and post-call RNG exactly.
+             The tiny stochastic-policy test now enforces the same list/tuple contract.
+             This is a recording-interface fix, not a task-success improvement.
+
+[16] CUDA candidate seeding indexed generators before lazy initialization
+-----------------------------------------------------------------------
+Date:        2026-10-05
+Fingerprint: Private decision-capture v1 CUDA oracle raises IndexError at
+             torch.cuda.default_generators[0]; CPU tests skip the hardware oracle.
+Cause:       CUDA availability does not initialize the default generator tuple.
+             Tiny CUDA policy creation allocates no device tensor before seeding.
+Fix:         Call public torch.cuda.init() before accessing the selected generator;
+             keep per-device seeding so alternatives do not change another GPU RNG.
+Before/after: V1: 1 failed / 74 passed / 2 skipped, no policy results collected.
+             V2: 76 passed / 2 skipped on CUDA, including noise/post-call RNG exact
+             replay and second-GPU RNG preservation. CPU cold-start ordering test
+             also passes. This is cloud-verified initialization, not a task metric.

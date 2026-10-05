@@ -1,7 +1,37 @@
 # GR00T N1.6 — plan
 
-**The gap: no published metric reproduced.** The model runs; nothing has been scored.
+**The gap: no published metric reproduced.** An experimental GR1 task baseline is now scored.
 LIBERO / SimplerEnv success rate is the target.
+
+The active strategy track is [STRATEGY.md](STRATEGY.md): an actual GR00T
+no-planning baseline on the official GR1 task, with a locally tested driver.
+As of 2026-10-04 the real task two-step smoke passes, including same-seed
+observation/action reproducibility. The separate private Kaggle CUDA smoke and
+ten-episode diagnostic baseline are complete: **3/10 successful (30%)**, seven
+budget stops, on T4/fp16. SDPA-vs-official-flash numerical fidelity remains unverified;
+this is an experimental task baseline, not a published-metric reproduction.
+
+The paired [budget scan](BUDGET_SCAN.md) is complete: **3/10 at 720 steps, 5/10 at
+1,080, and 6/10 at 1,440**, with all 787 old decisions reproduced exactly. Seeds
+1/4/9 recover through late drawer closure. Remaining cases are missed placement
+(2/7/8) and incomplete closure (0), checked against video/task signals.
+The paired [execution contrast](EXECUTION_SCAN.md) is complete as of 2026-10-05:
+**execute 4 scores 0/10 at 720 and 4/10 at 1,440**, below execute 8 at both
+deadlines. Two long-budget gains are outweighed by four regressions; policy calls
+increase 2.65×. **Retain execute 8.** All first predictions match; independent
+analysis verifies the complete diagnostics, and the source-bundle/cloud suite
+passes 61 tests (2 skipped).
+
+[Lossless failure-stage capture](DECISION_CAPTURE.md) is complete: **46/46** CUDA
+noise/action/post-call-RNG replays, **184** saved alternative predictions, unchanged
+792 reference decisions on four failures and two successful controls. Independent
+local analysis verifies every artifact/label and 6,333 video frames. Cloud tests
+pass 76 (2 skipped); the source bundle passes 75 locally (3 skipped).
+
+Next validate faithful simulator branch replay and evaluate candidate outcomes
+from the same environment state before selecting a policy rule. Prediction variation
+alone does not establish selection headroom. The same-input CUDA numerical oracle
+on sm_80+ remains an independent fidelity gate.
 
 ## Free-GPU fine-tune — **freezing the VLM is not enough**
 
@@ -41,4 +71,3 @@ Training goes through `common.trainer.ResumableTrainer` (CLAUDE.md: never a besp
 so a killed session resumes at step level. Recipe and estimator live in
 [finetune.py](finetune.py); `build_optimizer` covers only trainable parameters, since
 handing AdamW the frozen 2.6B is the easiest way to OOM while believing the backbone is free.
-

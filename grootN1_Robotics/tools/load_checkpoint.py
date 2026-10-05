@@ -97,6 +97,8 @@ def main() -> None:
         print(f"{len(missing)} missing / {len(unexpected)} unexpected / "
               f"{len(mismatched)} mismatched  -- GATE FAILED")
     print("=" * 64)
+    if missing or unexpected or mismatched:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

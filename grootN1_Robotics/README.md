@@ -6,6 +6,18 @@ despite what `tests/examples/test_pointnav.py` claims about needing `HF_TOKEN`.
 
 This project builds the VLA infrastructure that DiVLA then reuses. 
 
+Active strategy work: [STRATEGY.md](STRATEGY.md). The released checkpoint now drives
+the official GR1 task through a real two-step CPU smoke, with same-seed observations
+and actions reproduced exactly. The private T4/fp16 diagnostic baseline succeeds
+in **3/10 episodes within 720 steps**. A paired [budget scan](BUDGET_SCAN.md)
+reproduces all old decisions and reaches **6/10 within 1,440 steps**, with three
+late drawer-closure successes. The paired [execution-horizon contrast](EXECUTION_SCAN.md)
+scores **0/10 at 720 and 4/10 at 1,440** with execute 4, so **execute 8 remains the
+current setting**. [Lossless decision capture](DECISION_CAPTURE.md) now verifies
+**46/46** exact CUDA replays and saves **184** alternatives with unchanged control
+trajectories. Next evaluate candidate quality through faithful simulator branching.
+Published-metric and flash-vs-SDPA fidelity remain unverified.
+
 ## Architecture
 
 Two towers joined by cross-attention:
@@ -72,7 +84,7 @@ checkpoint loads on **CPU with no CUDA and no flash-attn**. Full detail in `bug_
 
 ```bash
 PYTHONPATH=grootN1_Robotics/upstream PYTORCH_ENABLE_MPS_FALLBACK=1 \
-  conda run -n groot_vl python -m pytest grootN1_Robotics/tests -q      # 25 passed
+  conda run -n groot_vl python -m pytest grootN1_Robotics/tests -q
 ```
 
 Two upstream blockers cleared, both captured in
@@ -87,10 +99,11 @@ Two upstream blockers cleared, both captured in
    siglip2 but left the `_init_weights` branches referencing the two classes they stripped.
    Fires on *every* `from_config` build, on any platform.
 
-**Carry-over risk:** the SDPA substitution is believed exact — same attention math, different
-kernel — but is **not yet verified against the flash path on CUDA**. This is the direct analogue
+**Carry-over risk:** SDPA now preserves the image-packing mask through `patches/0002`,
+after tests found that a plain kernel substitution allowed cross-image attention.
+It is **not yet verified against the flash path on CUDA**. This is the direct analogue
 of DiffusionDrive's `dfa_torch` validation, and needs the same treatment: a numerical oracle run on a
-free-tier GPU before any metric from this path is trusted.
+GPU with sm_80+ before claiming numerical fidelity; T4 cannot run FlashAttention-2.
 
 **→ [RESULTS.md](RESULTS.md)** — what is verified
 **→ [Plan.md](Plan.md)** — the fine-tune budget and what is left

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -93,11 +94,17 @@ def test_language_conditioning_changes_the_action(policy):
     from run_policy_cpu import build_observation
 
     obs = build_observation(DATASET, policy)
-    a, _ = policy.get_action(obs)
+    # Flow matching starts from sampled noise. Match that noise so a difference
+    # measures language conditioning rather than two different random draws.
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(17)
+        a, _ = policy.get_action(obs)
 
     obs2 = build_observation(DATASET, policy)
     obs2["language"][policy.language_key] = [["stand completely still and do nothing"]]
-    b, _ = policy.get_action(obs2)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(17)
+        b, _ = policy.get_action(obs2)
 
     assert any(
         not np.allclose(np.asarray(a[k]), np.asarray(b[k]), atol=1e-4) for k in a
