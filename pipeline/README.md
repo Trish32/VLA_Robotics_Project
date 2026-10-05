@@ -178,11 +178,32 @@ recurs. Prose source of record is [EXPERIMENT.md](EXPERIMENT.md); code defects a
 ## The honest limit
 
 **FoundationPose now runs** — `register()` + `track_one()` on a T4 against a mesh cut
-from our own TSDF, with a **2.08 cm** world-frame spread over 8 frames. That is
-self-consistency, not accuracy. Its pose disagrees with our segmentation centroid by
-**72 cm**, and the disagreement is a **175.63° rotation error**, so no pose accuracy is
-claimed yet. Upstream's own `demo_data/mustard0` runs correctly through the same code
+from our own TSDF. On the original input its pose disagreed with our segmentation
+centroid by **72 cm**, and the disagreement was a **175.63° rotation error**, so no pose
+accuracy is claimed. Upstream's own `demo_data/mustard0` runs correctly through the same code
 path (**2.06 cm**), so the limit is our mesh and mask, not the port.
+
+**And the mesh and mask were worse than they needed to be, for a reason that had nothing
+to do with the mesh.** `build_pose_bundle.py` kept the first 8 frames in which ≥ 50 of
+1,142 instance points survived its depth test — a 4.4% floor, which asks "is anything
+here" rather than "is the object visible here". It chose frames showing **11–17%** of the
+chair when **73%** was available in the same sequence, and it chose them from the start
+of the run, where a SLAM trajectory is least converged. Rebuilt on measured visibility,
+with a depth-verified dense mask in place of a point splat:
+
+| | before | after | control (mustard0) |
+|---|---|---|---|
+| mask pixels | 842 | **6,908** | 3,252 |
+| instance corroborated | 11–17% | **64–74%** | — |
+| camera baseline over 8 frames | 3.4 cm | **20.8 cm** | — |
+
+**Then the re-run, and the input turned out not to be the binding constraint.** On the
+rebuilt bundle — verified in-job by fingerprint — rotation moved **175.63° → 124.27°**,
+but the top-16 hypotheses still do not agree on an orientation (1/16 within 15°), while
+upstream's mustard0 in the same job converges 16/16. The old **2.08 cm** self-consistency
+is withdrawn: over views that actually differ the tracked object wanders **33.17 cm**.
+What remains is the mesh or the object, and the next run separates the two by giving
+mustard0 a mesh built the way ours is.
 
 The 6-DoF path is nonetheless wired: `tools/e2e_pose.py` consumes the pose and calls
 `refine_with_pose` **behind a gate** on translation, rotation and depth. On today's

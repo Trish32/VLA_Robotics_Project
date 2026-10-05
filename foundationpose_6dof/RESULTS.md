@@ -35,6 +35,12 @@ No CAD model: the mesh is cut from our TSDF and `ob_mask` is the instance projec
 into the frame (`pipeline/tools/build_pose_bundle.py`). Target `chair_4`, mesh 4,961
 verts / 9,657 faces, extents 1.573 × 1.168 × 0.986 m.
 
+> **The input below is superseded.** `build_pose_bundle.py` was rebuilt on 2026-10-04 —
+> frames selected by measured visibility rather than arrival order, a depth-verified
+> dense mask, outlier rejection before meshing. The bundle is now 4,224 verts / 8,189
+> faces, extents 1.58 × 1.11 × 0.59 m, masks averaging 6,908 px. The table below is the
+> **old** bundle; the re-run on the rebuilt one follows it.
+
 | check | result |
 |---|---|
 | `register()` | **returns a pose** — t = [0.567, 0.424, 2.730] m |
@@ -50,6 +56,41 @@ pose puts the object in the world frame, where a static object must not move; ov
 frames it moves **2.08 cm**. That is a *consistency* check. A tracker locked onto a wrong
 pose holds it exactly as steadily as one locked onto the right pose, so this bounds drift
 and says nothing about accuracy.
+
+**It means less again, measured 2026-10-04.** Those 8 frames span **3.4 cm of camera
+baseline and 1.1° of view angle** — one viewpoint recorded eight times, because the
+bundle took consecutive frames. A tracker that ignored its input entirely would also hold
+still across them, so the check had almost no leverage to begin with. The rebuilt bundle
+spans **20.8 cm**, and over it the spread is **33.17 cm** — the 2.08 cm is withdrawn.
+
+## Re-run on the rebuilt bundle · MEASURED (Kaggle T4, v15)
+
+| | v14 — old bundle | **v15 — rebuilt bundle** | mustard0, same job |
+|---|---|---|---|
+| input the job read | not fingerprinted | `092fd80f0f0d`, **asserted in-job** | — |
+| anchor mask | 695 px | 7,325 px | 3,252 px |
+| rotation error, frame 0 | 175.63° | **124.27°** | — |
+| rotation error, median of 8 frames | 175.86° | **95.65°** | — |
+| translation vs map, median | 73.02 cm | **140.40 cm** | — |
+| top-16 hypotheses within 15° of best | 2/16 | **1/16** | 16/16 |
+| median pairwise angle, top-16 | 127.31° | **134.17°** | 0.29° |
+| world-frame spread | 2.08 cm over a 3.4 cm baseline | **33.17 cm** over a 20.8 cm baseline | — |
+| stage-4 gate | 0/8, refused | **0/8, refused** | — |
+
+**The job read the rebuilt input** — it asserted the fingerprint before `register()`, and
+the answer moved, so this is not a stale result reproducing itself. The first v15 attempt
+*did* mount the old bundle, by racing the dataset upload, and refused itself (`bug_log.txt`
+[10]).
+
+**The answer changed; the verdict did not.** Hypothesis clustering needs neither our map
+nor ground truth, and it is where it was: the top-16 do not agree on an orientation,
+while mustard0 in the same job converges 16/16. Frame selection, the mask and the
+instance were real defects and fixing them was necessary — **none was binding**.
+
+**What remains** between our case and the control is the mesh (a one-sided TSDF shell
+against CAD) and the object (a 1.6 m thin-structured chair against a compact bottle).
+This run cannot separate them. From the log, as an observation only: `reset_object`
+voxelises model points at diameter / 20 — **8.5 cm** here, leaving **434** points.
 
 **The disagreement is a rotation error, not a translation one.** The origin probe first
 put a lower bound on it: re-centring the mesh moved its origin a known **52.9 cm**, and
@@ -126,13 +167,17 @@ view, against mustard0's 3,252 px over a CAD mesh. **No pose accuracy is claimed
 own data**, and `pipeline/tools/e2e_pose.py` refuses to admit the pose into the world
 model: 0/8 frames corroborate and the hypotheses do not converge.
 
-**What would close it**, in order of expected effect:
+**What would close it**, in order of expected effect — **revised 2026-10-04**, because
+the top two rows were both about mesh quality and the measured cause was neither:
 
-| lever | why | cost |
+| lever | why | status |
 |---|---|---|
-| a cleaner instance | `chair_4` is a 1.58 m *region*, not an object — over-segmentation is upstream of everything here | needs §3's recognition work, or ground truth |
-| denser fusion (smaller `--stride`) | bigger masks and a less ragged shell | TSDF memory |
-| multi-view registration | one 695 px view cannot fix an orientation a second view would | upstream supports it; our bundle already carries 8 poses |
+| ~~**frame selection**~~ | the bundle kept the first 8 frames clearing a 4.4% floor, showing **11–17%** of the chair where **73%** was available in the same sequence | **DONE.** 842 → 6,908 px, baseline 3.4 → 20.8 cm. `bug_log.txt` [8] |
+| ~~re-run `register()` on the rebuilt bundle~~ | the gain was measured on the input only | **DONE (v15): still refused.** 175.63° → 124.27°, hypotheses still scattered 1/16. Input quality was not binding |
+| **separate mesh from object** | the two remaining differences from mustard0 | **next.** Give mustard0 a mesh built our way — fused from its own depth, one-sided, same Poisson path. It has ground truth, so the answer is an accuracy. Fails → the mesh pipeline is convicted; still lands → the chair is, and the move is a different target |
+| ~~denser fusion (smaller `--stride`)~~ | published as "bigger masks and a less ragged shell" | **REFUTED.** On a frame where the chair is in view, 73% of its points agree with measured depth to a −1.1 cm median — the fusion was never the limit |
+| ~~a cleaner instance~~ | `chair_4` was called a 1.58 m *region*, not an object | **CLOSED.** Outlier rejection before meshing takes it to 0.59 m tall, and `survey_instances.py` scored all 5 instances: `chair_4` leads every column, **93 frames over the visibility bar** against the runner-up's 13, and 2 of 5 are not poseable at all. No cleaner instance exists in this scene |
+| multi-view registration | one view cannot fix an orientation a second view would — and the old bundle's 8 views spanned **1.1°**, so it had no second view to offer | upstream supports it; the bundle now spans 20.8 cm |
 
 ## The bug that blocked this for three rounds
 

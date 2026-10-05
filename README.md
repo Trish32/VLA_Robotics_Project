@@ -33,7 +33,7 @@ RGB-D ──▶ ORB-SLAM3 / DROID-SLAM ──▶ TSDF fusion ──▶ OpenMask3
 | **localize** — ORB-SLAM3 | **ATE 1.03 cm**, 798/798 frames, 41.4 FPS CPU |
 | **localize, dynamic** — + YOLOv8n/ByteTrack | **ATE 80.92 → 18.70 cm (−76.9%)** |
 | **segment** — Mask3D + SAM + CLIP | checkpoint **0/0/0**, via a pure-PyTorch sparse conv verified at **1e-10** |
-| **pose** — FoundationPose | `register()` + tracking on a T4; **2.08 cm** self-consistency, but **175.63° rotation error** vs our map — gated out, not claimed |
+| **pose** — FoundationPose | runs on a T4; port validated on upstream's demo (**2.06 cm**). On our input the hypotheses do not converge (**124.27°**, 1/16 agree) — gated out, not claimed |
 | **act** — GR00T N1.6-3B | **16 steps × 29 DoF**, 3.1 s CPU |
 | **simulate** — action-conditioned world model | dynamics beats identity (0.0554) and constant velocity (0.0262) at **0.0202–0.0258** on held-out proprio; **not** validated on objects |
 
@@ -97,7 +97,11 @@ what changed is how the penetration is resolved, not whether it happens.
 The stack above. Runs end to end on real TUM RGB-D on CPU. FoundationPose registers correctly on
 upstream's own demo data (**2.06 cm**), so the port is validated — but on a mesh cut from our TSDF
 its pose is **175.63°** off, so stage 4 gates it out and the chain stays position-only. The limit
-is our 695 px mask over a one-sided shell, and the project page leads with that.
+is the input, and the project page leads with that. The 695 px mask that input was measured on
+turned out to be a **frame-selection bug**, not the sparse shell it was published as — rebuilding
+it gives **6,908 px** over the same fusion, against the working control's 3,252. Re-run on that
+input, the rotation moves to **124.27°** but the hypotheses still scatter, so the input was a real
+defect and not the binding one — the mesh or the object is, and the next run separates them.
 
 ### [DexVLA](DexVLA_Robotics/) — VLM with a plug-in diffusion expert
 

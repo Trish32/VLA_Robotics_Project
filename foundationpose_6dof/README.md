@@ -10,19 +10,33 @@ Model-based pose estimation and tracking: `register(K, rgb, depth, ob_mask, mesh
 ## The limit, up front
 
 `register()` and `track_one()` **do run** on a Tesla T4 against a mesh cut from our own
-TSDF, and the tracker is self-consistent — **2.08 cm** world-frame spread over 8 frames.
-That bounds drift; it is not an accuracy result, because a tracker locked onto a wrong
-pose holds it just as steadily.
+TSDF. **No pose accuracy is claimed** — on the rebuilt input the rotation error is
+**124.27°**, the top-16 hypotheses do not agree on an orientation, and the tracked object
+wanders **33.17 cm** across views that actually differ.
 
-**No pose accuracy is claimed, and the pose is refused downstream.** The returned pose
-disagrees with our segmentation centroid by **72 cm**, and the disagreement is a
-**rotation error of 175.63°** — the object is essentially flipped.
+**The pose is refused downstream** on all four gate checks. On the original input it was
+**175.63°** off — essentially flipped.
 
 **The port itself is validated.** Upstream's own `demo_data/mustard0`, through the
 identical code path, returns a correct pose — its origin sits **2.06 cm** behind the
 measured surface against a 9.6 cm half-depth. So the error belongs to our input, not to
-the model: a 695 px mask over a one-sided Poisson shell, against mustard0's 3,252 px over
-a CAD mesh. See [RESULTS.md](RESULTS.md) and `bug_log.txt` [5].
+the model: a 695 px mask against mustard0's 3,252 px over a CAD mesh. See
+[RESULTS.md](RESULTS.md) and `bug_log.txt` [5].
+
+**Why ours was 695 px was then misdiagnosed, and the correction is the live item.** It
+was published as a one-sided Poisson shell needing a denser fusion. It was neither: the
+bundle builder kept the first 8 frames in which ≥ 50 of 1,142 instance points survived
+its depth test — a 4.4% floor — and so selected frames showing **11–17%** of the chair
+where **73%** was available in the same sequence, from the start of the run where the
+SLAM trajectory is least converged. Rebuilt on measured visibility, same fusion:
+**6,908 px**, camera baseline **3.4 → 20.8 cm**. The old bundle's 2.08 cm tracking spread
+was weak for the same reason — its 8 frames spanned **1.1°** of view angle. `bug_log.txt` [8].
+
+**The re-run then answered the question the fix was for.** On the rebuilt input,
+verified in-job by fingerprint, rotation moved 175.63° → 124.27° and the hypotheses
+still scatter (1/16 within 15°) — while mustard0 in the same job converges 16/16. The
+input defects were real and **not binding**. What remains is the mesh or the object; the
+next run separates them by giving mustard0 a mesh built our way. `bug_log.txt` [10].
 
 ## Where the mesh comes from — no CAD models
 

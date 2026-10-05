@@ -187,6 +187,19 @@ def main() -> int:
         raise SystemExit(f"pose result is for {result.get('target')!r}, bundle is for "
                          f"{meta['target']!r} — rebuild one of them")
 
+    # The pose is computed on a T4 and copied back by hand, so nothing but this check
+    # ties the result to the input it was computed from. Matching target names is not
+    # enough: a rebuilt bundle keeps its target and changes every frame under it. See
+    # `build_pose_bundle.bundle_fingerprint`.
+    want = meta.get("fingerprint")
+    got = result.get("bundle_fingerprint")
+    if want and got != want:
+        print(f"[4 pose ]  STALE: this result came from bundle "
+              f"{got or 'an un-fingerprinted build'}; the bundle on disk is {want}.")
+        print("[4 pose ]  refusing to read it as current. Re-run the Kaggle kernel "
+              "against the rebuilt bundle, or check out the bundle it was run on.")
+        return 2
+
     print(f"[4 pose ]  {meta['target']} ({meta['label']}), {len(poses)} frames "
           f"from {result.get('source', 'unknown source')}")
 

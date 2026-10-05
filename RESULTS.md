@@ -612,8 +612,20 @@ zeros passes shape tests and poisons every downstream result).
 > **2.06 cm** on upstream's `demo_data/mustard0` — so the port is validated. On our mesh
 > its pose disagrees with the segmentation centroid by **72 cm** with a **175.63°**
 > rotation error, and the stage-4 gate refuses it; the chain stays position-only. The
-> limit is our 695-px mask over a one-sided shell, not the port. Any sentence below
-> this line that reads "never run" describes the local bar only.
+> limit is our input, not the port. Any sentence below this line that reads "never run"
+> describes the local bar only.
+>
+> **AMENDED, 2026-10-04.** The "695-px mask over a one-sided shell" diagnosis was wrong
+> about the cause. The bundle took the first 8 frames clearing a 4.4% floor, showing
+> 11–17% of the object where 73% was available in the same sequence; rebuilding it gives
+> **6,908 px** and a **20.8 cm** camera baseline against the old 3.4 cm, on the same
+> fusion. The 2.08 cm spread above is also weaker than it reads — it was measured over 8
+> frames spanning 1.1° of view angle.
+>
+> **RE-RUN, 2026-10-04 (v15, T4).** On the rebuilt input, verified in-job by fingerprint:
+> rotation **124.27°**, hypotheses scattered (1/16 within 15°; mustard0 16/16 in the same
+> job), spread **33.17 cm** over a 20.8 cm baseline. The 2.08 cm figure is withdrawn and the
+> gate still refuses. See `Plan.md` §2 and `foundationpose_6dof/bug_log.txt` [8]–[10].
 
 Built on `torch 2.10.0+cu128` / CUDA 12.8 / Tesla T4. The first attempt failed inside
 pip's build isolation, which provisions a fresh environment without the installed torch

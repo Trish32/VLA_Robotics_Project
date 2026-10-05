@@ -17,7 +17,24 @@
 # load, which is the Fidelity Rule's first half and cannot be checked on the Mac.
 import os, subprocess, sys, torch, traceback
 
-KERNEL_VERSION = "v14-pose-clustering"
+KERNEL_VERSION = "v15-rebuilt-bundle"
+
+# Stamped by tools/push_kaggle_pose.py at push time with the fingerprint of the bundle
+# it uploaded. The job then asserts that the dataset Kaggle actually mounted is that one.
+#
+# This exists because of a failure mode that MIMICS the interesting result. If the job
+# silently reads a stale dataset version -- a cached mount, an upload that did not land,
+# a path still pointing at the previous bundle -- then register() returns the OLD answer,
+# and an unchanged 175.63 deg reads as "the rebuilt input changed nothing, so the mesh
+# geometry is the limit". That conclusion would be unearned and the run would look like
+# evidence for it.
+#
+# The tell is PRECISION. Genuinely different input through genuinely bad geometry lands
+# NEAR the old number, essentially never ON it to the same decimals. So a bit-identical
+# repeat means "same input" long before it means "same geometry". Rather than rely on
+# noticing that after the fact, the job proves which bundle it read, in the output.
+EXPECTED_FINGERPRINT = None          # replaced at push time; None = pushed by hand
+
 print(f"=== {KERNEL_VERSION} ===", flush=True)
 
 def sh(label, cmd, tail=2500):
@@ -189,6 +206,27 @@ try:
     meta = json.load(open(f"{B}/bundle.json"))
     K = np.array(meta["K"], dtype=np.float64)
     mesh = trimesh.load(f"{B}/mesh.obj", process=False)
+
+    # Which bundle did Kaggle actually mount? Printed before anything else so the answer
+    # is at the top of the log, and recorded in the result so a reader months later does
+    # not have to trust that the right input was used.
+    got = meta.get("fingerprint")
+    anchor = meta["frames"][0]
+    print(f"\n  [input] fingerprint   {got}", flush=True)
+    print(f"  [input] expected      {EXPECTED_FINGERPRINT}", flush=True)
+    print(f"  [input] anchor frame  {anchor.get('source_index', 'unknown')}, "
+          f"{anchor['mask_pixels']} px, "
+          f"{anchor.get('visible_fraction', float('nan')):.0%} of the instance", flush=True)
+    print(f"  [input] mask px       "
+          f"{[f['mask_pixels'] for f in meta['frames']]}", flush=True)
+    if EXPECTED_FINGERPRINT and got != EXPECTED_FINGERPRINT:
+        raise SystemExit(
+            f"\n  STALE INPUT: this job was pushed for bundle {EXPECTED_FINGERPRINT} "
+            f"but Kaggle mounted {got}.\n"
+            f"  Refusing to run -- a pose computed on the wrong bundle is worse than no "
+            f"pose, because it is indistinguishable from a real result.\n"
+            f"  Most likely the dataset version did not land before the kernel started.")
+
     print(f"  target {meta['target']} ({meta['label']})", flush=True)
     print(f"  mesh {len(mesh.vertices)} verts / {len(mesh.faces)} faces, "
           f"extents {np.round(mesh.extents, 3).tolist()} m", flush=True)
@@ -303,6 +341,19 @@ try:
     json.dump({
         "ok": True, "source": f"kaggle:foundationpose-nvdiffrast {KERNEL_VERSION}",
         "target": meta["target"], "label": meta["label"],
+        # Which bundle this was computed from. The pose stage refuses a result whose
+        # fingerprint does not match the bundle on disk, so a rebuilt input cannot be
+        # silently scored against an old answer.
+        "bundle_fingerprint": meta.get("fingerprint"),
+        # Observable facts about the input, so which bundle ran is recoverable from the
+        # result even if the fingerprint is ever absent or doubted.
+        "input": {
+            "anchor_source_index": anchor.get("source_index"),
+            "anchor_mask_pixels": anchor["mask_pixels"],
+            "anchor_visible_fraction": anchor.get("visible_fraction"),
+            "mask_pixels": [f["mask_pixels"] for f in meta["frames"]],
+            "mesh": [len(mesh.vertices), len(mesh.faces)],
+        },
         "sequence": meta["sequence"],
         "poses_cam_obj": [T.tolist() for T in track],
         "world_spread_cm": spread * 100,

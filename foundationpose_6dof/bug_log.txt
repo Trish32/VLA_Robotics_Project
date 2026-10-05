@@ -210,6 +210,180 @@ Also corrected: an earlier write-up of this run claimed all three checks fired
 "including the depth one". They did not. The gate refused on two.
 
 
+[8] The input blamed on fusion density was eight frames chosen in arrival order
+--------------------------------------------------------------------------------
+Date:        2026-10-04
+Fingerprint: The pose bundle's masks were 655-954 px, where a 1.58 m object at 2.0 m
+             under fx=535 subtends ~410 px across. Published diagnosis: "a one-sided
+             Poisson shell seen through a sparse partial view", fix "a denser fusion
+             (smaller --stride)". Both wrong.
+
+Cause:       `build_pose_bundle.py` walked the sequence in order and kept the first 8
+             frames in which >= 50 instance points survived its depth test. 50 of 1,142
+             is a 4.4% floor, so the rule is not "is the object visible here" but "is
+             anything here at all" -- and on a SLAM-posed sequence the earliest frames
+             are also the worst-posed ones. Measured across all 827 usable frames:
+
+                                       chosen frames 1-9      sequence best
+               instance corroborated    11-17%                 73-74%
+               median signed residual   -37 to -62 cm          -1.1 cm
+               camera baseline, 8 fr    3.4 cm                 20.8 cm available
+               view-angle span, 8 fr    1.1 deg
+
+             The SIGN is what convicts the selector rather than the map. A point BEHIND
+             the measured surface is occluded, which is ordinary. These points were in
+             FRONT of it by half a metre -- not occlusion, since had the object been
+             there it is what the depth camera would have hit. The fused map and the
+             depth images agree to -1.1 cm median on a frame where the chair is actually
+             in view, so the fusion was never the limit.
+
+             A second, independent defect in the same function: the mask was a SPLAT of
+             projected points closed with a 9x9 kernel. The cloud is voxel-sparse, so
+             even a perfect frame splats ~840 points into a region subtending tens of
+             thousands of pixels -- 4.7% of its own bounding box.
+
+             A third: the mesh was cut from the raw member set, skipping the density
+             rejection every other stage applies, so 14 strays stretched the instance
+             0.99 -> 0.59 m in height and Poisson (cropped to that box) built a slab of
+             invented surface in the empty 40 cm.
+
+Fix:         Three changes, all in `build_pose_bundle.py`, with tests in
+             `pipeline/tests/test_pose_bundle.py`:
+               - rank every frame by corroborated points; anchor `register()` on the
+                 best; fill the rest as a forward chain within `--max-step` (0.15 m) so
+                 `track_one` still has a tractable step, and at least `--min-step`
+                 (0.03 m) apart so the baseline is not one view eight times;
+               - refuse outright below `--min-visible` (0.35) rather than emit a bundle
+                 whose badness nothing downstream can see;
+               - replace the splat with a depth-verified dense fill: rasterise the
+                 instance's own depth, take a local nearest-surface estimate, keep every
+                 pixel whose MEASURED depth agrees. Bounded by the depth image, so
+                 interiors fill and background does not;
+               - apply `reject_outliers` before meshing.
+
+Metric before/after (same fusion, same mesh pipeline, same instance):
+
+               mask pixels, mean            842  ->  6,908     (8.2x)
+               mask fill of its bbox        4.7% ->  69.0%
+               instance corroborated      11-17% ->  64-74%
+               camera baseline span       3.4 cm ->  20.8 cm
+               max tracking step                ->  5.0 cm   (under the 15 cm cap)
+               depth slab under mask     13.2 cm ->  17.7 cm  (NOT bleeding: the mask
+                                                      grew 8x, the depth it covers did
+                                                      not)
+               mesh triangles              9,657 ->  8,189
+               instance height              0.99 ->  0.59 m
+
+             For scale: mustard0, the control that registers CORRECTLY through this same
+             code path, has a 3,252 px mask. The bundle was at 26% of that and is now at
+             212%.
+
+NOT YET MEASURED: whether this moves the 175.63 deg rotation error. It cannot be known
+here -- `register()` needs nvdiffrast. The claim made is about the INPUT only, and the
+bundle fingerprint below exists so the re-run cannot be confused with the old one.
+
+Also fixed, same entry: `pose_result.json` is produced on a T4 and copied back by hand,
+and the pose stage checked only that the target NAME matched. A rebuilt bundle keeps its
+target and changes every frame under it, so a stale result compared equal and was read
+as current. `bundle.json` now carries a `fingerprint` over mesh, frame identities and
+camera poses; `fp.py` copies it into the result; `e2e_pose.py` refuses a mismatch. This
+is [S22] from the simulator track in a different file -- comparability has to be a
+property of the recorded artefacts, not of remembering which run produced what. The
+result on disk is correctly refused as stale by this check.
+
+Lesson kept: the published diagnosis named the right SYMPTOM (695 px) and the wrong
+cause, and the proposed fix (refuse a denser fusion) would have cost hours of TSDF
+memory to move a number that frame selection moved 8x for free. What separated them was
+one measurement nobody had taken -- the same statistic, computed on every frame instead
+of on the eight already in hand. This is the same shape as W7 in the simulator track,
+where a planner fix was designed for what turned out to be contact stiffness.
+
+
+[9] The mesh handed to register() was not reproducible, and could abort the process
+-------------------------------------------------------------------------------------
+Date:        2026-10-04
+Fingerprint: Three consecutive builds of the SAME 1,128 instance points gave 9,657 /
+             9,655 / 9,656 triangles. Run in a tight loop the call does not vary, it
+             terminates the process:
+
+               [ERROR] FEMTree.IsoSurface.specialized.inl (Line 1463)
+                       Failed to close loop [6: 85 31 64] | (73439): (684,576,641)
+               libc++abi: terminating
+               Abort trap: 6
+
+             An abort, not an exception -- no traceback, no cleanup, nothing to catch.
+
+Cause:       `create_from_point_cloud_poisson` defaults to `n_threads=-1`, i.e. every
+             core. The multi-threaded isosurface extraction is order-dependent, so the
+             triangulation varies run to run and occasionally fails to close a loop.
+
+             Cost beyond the crash: a mesh that changes between builds cannot be diffed
+             against a saved input, which is the Debug Rule's whole method, and it makes
+             the bundle fingerprint added in [8] meaningless -- rebuilding with identical
+             settings would invalidate a pose result that was still perfectly valid.
+
+Fix:         `poisson_mesh()`, with `n_threads=1` pinned and the reason stated at the
+             call site so it is not "optimised" back later. Two tests: one spies on the
+             kwarg, one asserts the crop keeps the mesh inside its own samples.
+
+Metric before/after:
+
+               distinct vertex hashes over 12 builds   many, then abort  ->  1 / 12
+               distinct triangle counts over 12 builds  3 seen in 3 runs ->  1 / 12
+               bundle fingerprint over 4 rebuilds       changed          ->  stable
+               build wall-clock                                          ->  3.8 s total
+
+Lesson kept: this was found by accident. The fingerprint from [8] changed between two
+builds in which nothing had been edited, and the only reason that was noticeable is that
+the fingerprint existed at all. A comparability token earns its keep the first time it
+disagrees with you -- the instinct to loosen the check instead of chasing the mismatch is
+exactly how [S20]/[S21]/[S22] happened on the simulator track.
+
+
+[10] The kernel ran on the previous bundle, and only its own input check said so
+---------------------------------------------------------------------------------
+Date:        2026-10-04
+Fingerprint: v15's first run printed, before register():
+
+               [input] fingerprint   None
+               [input] expected      092fd80f0f0d
+               [input] mask px       [695, 803, 655, 941, 901, 834, 954, 953]
+
+             Those are the OLD bundle's masks. Yet the dataset on Kaggle, downloaded
+             afterwards, serves 092fd80f0f0d with [7325, 5951, ...] — the upload landed.
+
+Cause:       A race, not a failed upload. `dataset_create_version` returns when the upload
+             is ACCEPTED; Kaggle then processes the version asynchronously, and a kernel
+             pushed inside that window mounts the last version that was READY. The push
+             script pushed the kernel seconds after the dataset call.
+
+Why it matters more than a wasted session: had the kernel not checked its input, it
+would have returned ~175.63 deg on the old bundle, and the natural reading — "the
+rebuilt input changed nothing, so the Poisson shell geometry is the limit" — would have
+been written up as the conclusion of the very experiment designed to test it. A stale
+input does not look like an error; it looks like a negative result.
+
+Fix:         Two layers, because either alone has a gap.
+               - `wait_for_dataset()` in tools/push_kaggle_pose.py blocks the kernel push
+                 until Kaggle SERVES the new bundle — checked by downloading bundle.json
+                 from the live dataset and comparing its fingerprint, not by trusting a
+                 status field.
+               - `EXPECTED_FINGERPRINT`, stamped into fp.py at push time, makes the job
+                 refuse a mismatched mount. This is the layer that fired here.
+             Also: the poll loop compared str(KernelWorkerStatus.ERROR).lower() to
+             "error", never matched, and polled 18 more times after the job had failed.
+             grootN1_Robotics/tools/kaggle_baseline.py already stripped the enum prefix;
+             now this one does too.
+
+Credit:      the input check exists because a peer session pointed out that an
+             unchanged-to-the-decimal 175.63 deg would more likely mean "same input" than
+             "same geometry", before the run. It fired on the first attempt.
+
+Metric before/after:  kernel pushed before dataset served     ->  blocked until served
+                      stale mount                             ->  refused in-job, logged
+                      polls after terminal status             18  ->  0
+
+
 VERIFICATION STATUS — local vs cloud
 --------------------------------------
 LOCALLY VERIFIED (CPU, no nvdiffrast, no pytorch3d):

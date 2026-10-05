@@ -30,7 +30,7 @@ Two distinctions are load-bearing throughout and are never collapsed:
 | **SLAM** | REAL | ORB-SLAM3 ATE **1.03 cm**, 41.4 FPS CPU. Dynamic rejection **80.9 → 18.7 cm**, at 38.1 → 18.5 FPS — *below* a 30 Hz loop, so not described as real-time | — |
 | **DROID-SLAM** | — | checkpoint loads 0/0/0, **never executed**. Every SLAM number here is ORB-SLAM3 | unchanged |
 | **Segmentation** | REAL | checkpoint 0/0/0; sparse conv 1e-10 vs `nn.Conv3d`; 4.8× / 32.4× fewer SAM passes, four of five steps bitwise-identical. **No mIoU** — blocked on ground truth | — |
-| **6-DoF pose** | REAL | **FoundationPose has run.** 2.06 cm on upstream demo (port validated), 175.63° on our mesh (input is the limit), stage-4 gate **refuses**, chain is position-only | replaces "never run" in RESULTS.md §nvdiffrast |
+| **6-DoF pose** | REAL | **Re-run on the rebuilt input, 2026-10-04: still refused.** Rotation 175.63° → 124.27°, but the top-16 hypotheses still scatter (1/16 within 15°) where mustard0 in the same job converges 16/16. Input quality was a real defect, not the binding one. The 2.08 cm self-consistency is **withdrawn** — 33.17 cm over a real baseline. Chain stays position-only | replaces "never run" in RESULTS.md §nvdiffrast; the rebuild replaces "a denser fusion is the lever" in §2 |
 | **Object dynamics** | REAL | **ties identity** on two episodes; the model never leaves its initialisation. "+26.2% vs constant velocity" was retracted by `world_model/RESULTS.md` as misleading | — |
 | **Object dynamics** | SIM | **+37.4% vs identity / +60.0% vs constant velocity** on 320 episodes. This is *not* evidence about real data and is never quoted as such | — |
 | **Candidate selection** | SIM | **headroom +0.0.** Perfect episode-depth selection 99.0% = policy alone 99.0%; a winner exists at 100% of decisions. The heuristic selector's 88.5% is *below* not selecting | replaces every earlier "the scorer ranks badly" reading — see W1, W2, W8, W11 |
@@ -78,7 +78,8 @@ both official checkpoints load and construct on `cuda:0` (scorer 15.77 M, refine
 1,142 instance points, 8 frames with occlusion-tested masks.
 
 **Done since:** `register()` and `track_one()` run on a T4 against that mesh —
-**2.08 cm world-frame spread** over 8 frames, so the tracker is strongly self-consistent.
+**2.08 cm world-frame spread** over 8 frames, read at the time as strong self-consistency.
+**Withdrawn 2026-10-04:** over a real 20.8 cm baseline it is **33.17 cm** — see check 1.
 
 **Not done:** the pose disagrees with our map by **72.14 cm**, and the disagreement is a
 **175.63° rotation error** — the object is essentially flipped — not a translation one.
@@ -86,10 +87,14 @@ See `foundationpose_6dof/bug_log.txt` entry [4].
 
 **What the three checks say.** None needs ground truth:
 
-1. **World-frame spread — passes, and proves less than it looks.** A static object must
-   stay static once each tracked pose is composed with its camera pose: **2.08 cm** over
-   8 frames. That is a *consistency* check. A tracker locked onto a wrong pose holds it
-   exactly as steadily as one locked onto the right pose.
+1. **World-frame spread — passes, and proves even less than it looked.** A static object
+   must stay static once each tracked pose is composed with its camera pose: **2.08 cm**
+   over 8 frames. That is a *consistency* check — a tracker locked onto a wrong pose
+   holds it exactly as steadily as one locked onto the right pose. It is now known to be
+   weaker still: **those 8 frames spanned 3.4 cm of camera baseline and 1.1° of view
+   angle**, so they are one viewpoint recorded eight times, and a tracker that ignored
+   its input entirely would also have held still across them. **Withdrawn on re-run:**
+   over the rebuilt bundle's 20.8 cm baseline the spread is **33.17 cm**.
 2. **Agreement with the map — fails.** `register()` says z = 2.73 m; the segmentation
    centroid says 2.05 m; median depth under the mask is 2.10 m.
 3. **Rotation — fails, and this is the real finding.** Moving the mesh origin a known
@@ -100,8 +105,8 @@ See `foundationpose_6dof/bug_log.txt` entry [4].
 4. **The control — run, and it convicts our input.** Upstream's `demo_data/mustard0`
    through the identical code path returns a **correct** pose: origin 2.06 cm behind the
    measured surface, against a 9.6 cm half-depth. The port, the checkpoints and the
-   adaptation layer are sound. The difference is the input — 695 px over a one-sided
-   Poisson shell, against 3,252 px over a CAD mesh.
+   adaptation layer are sound. The difference is the input — 695 px against mustard0's
+   3,252 px over a CAD mesh. *Why* ours was 695 px was then misdiagnosed; see below.
 
    *A metric that failed its own control, and its replacement:* r13 read the scorer's
    flat top (48/252 within 1%) as "orientation unidentifiable". mustard0 is flatter — an
@@ -123,15 +128,138 @@ of `reset_object` subtracting the mesh's bbox centre. `estimater.py:233` undoes 
 subtraction before returning. The correction is kept rather than quietly edited out
 because the failed fix is what produced check 3.
 
-**The mask is the cause, now with the control to back it.** 695 px, where a 1.58 m object
-at 2 m under fx = 535 should subtend ~410 px across — a one-sided Poisson shell seen
-through a sparse partial view. mustard0 gets 3,252 px over a CAD mesh and lands the pose.
-**What would close it:** a denser fusion (smaller `--stride`) for bigger masks, and a
-cleaner instance than a 1.58 m coarse proposal — `chair_4` is a region, not an object.
+**The mask was the symptom. The cause was frame selection — corrected 2026-10-04.**
+
+The paragraph this replaces read "695 px … a one-sided Poisson shell seen through a
+sparse partial view", and prescribed **a denser fusion (smaller `--stride`)**. The
+symptom was right and the cause was wrong, and the prescription would have spent hours
+of TSDF memory on something frame selection fixed for free.
+
+`build_pose_bundle.py` walked the sequence in order and kept the first 8 frames in which
+≥ 50 instance points survived its depth test. 50 of 1,142 is a **4.4% floor**, so the
+rule asked "is anything here at all", not "is the object visible here" — and on a
+SLAM-posed sequence the earliest frames are also the worst-posed. Measured across all
+827 usable frames of `fr3/walking_xyz`:
+
+| | the 8 frames it chose | available in the same sequence |
+|---|---|---|
+| instance corroborated by depth | **11–17%** | **73–74%** |
+| median signed residual | −37 to −62 cm | **−1.1 cm** |
+| camera baseline over 8 frames | 3.4 cm | 20.8 cm |
+| view-angle span over 8 frames | 1.1° | — |
+
+**The sign is what convicts the selector rather than the map.** A point *behind* the
+measured surface is occluded, which is ordinary and expected. These points were half a
+metre *in front* of it — which is not occlusion at all, because had the object been
+there it is what the depth camera would have hit. On a frame where the chair is actually
+in view the fused map agrees with the depth images to a **−1.1 cm median**. The fusion
+was never the limit, so §5's `--stride` lever does not apply here.
+
+Two further defects in the same function, found alongside it: the mask was a **splat** of
+projected points closed with a 9×9 kernel, which covers 4.7% of its own bounding box
+however good the frame; and the mesh was cut from the **raw** member set, skipping the
+density rejection every other stage applies, so 14 strays stretched the instance to
+0.99 m tall and Poisson — cropped to that box — built a slab of invented surface in the
+empty 40 cm.
+
+**Fixed, and measured on the same fusion, same mesh pipeline, same instance:**
+
+| | before | after |
+|---|---|---|
+| mask pixels, mean | 842 | **6,908** (8.2×) |
+| mask fill of its own bbox | 4.7% | **69.0%** |
+| instance corroborated | 11–17% | **64–74%** |
+| camera baseline span | 3.4 cm | **20.8 cm** |
+| max step between tracked frames | — | 5.0 cm (cap 15 cm) |
+| depth slab under the mask | 13.2 cm | 17.7 cm |
+| mesh triangles | 9,657 | 8,189 |
+| instance height | 0.99 m | 0.59 m |
+
+The depth slab is the check that the mask is not simply bigger: it grew 8.2× while the
+range of depth it covers barely moved, so the extra pixels are the same surface, not the
+background. For scale, **mustard0 — the control that registers correctly — has a 3,252 px
+mask.** The bundle was at 26% of the control and is now at 212%.
+
+**And `chair_4` is the right target after all.** The other half of the old prescription
+was "a cleaner instance than a 1.58 m coarse proposal". `tools/survey_instances.py` now
+asks of every labelled instance what `build_pose_bundle.py` asks of one — how much of it
+any single frame corroborates — and the answer closes that lever rather than opening it:
+
+| instance | pts | best visible | best frame residual | frames over the 35% bar | |
+|---|---|---|---|---|---|
+| **`chair_4`** | 1,128 | **0.74** | **−0.7 cm** | **93** | ← target |
+| `desk_2` | 5,173 | 0.67 | +2.0 cm | 13 | |
+| `desk_1` | 9,275 | 0.40 | +8.0 cm | 8 | 2 merged proposals |
+| `person_3` | 6,457 | 0.29 | +17.2 cm | 0 | not poseable |
+| `desk_5` | 351 | 0.12 | **−611 cm** | 0 | not poseable |
+
+`chair_4` wins on every column, and by 7× on the one that matters most — how many frames
+clear the bar at all. So the target choice was never the problem; the frames were. The
+survey is the cheap half of the r14 pre-flight (`foundationpose_6dof/bug_log.txt` [6]):
+r14 asks whether the *estimator* can fix an orientation and needs a T4, this asks whether
+the *input* could support one and runs in 1.8 s. `desk_5`'s −611 cm independently
+confirms what §4 called "351 sparse points that support nothing".
+
+**Two defects fell out of building it.** `build_pose_bundle.py` resolved its target with
+`next(...)`, so for an instance the registry had merged from several proposals it
+silently used the first — for `desk_1` that is 4,641 of 9,275 points, a mesh cut from
+half an object with every printed number looking ordinary. And the Poisson call ran at
+Open3D's default thread count, which is **non-deterministic**: the same 1,128 points gave
+9,657 / 9,655 / 9,656 triangles on three consecutive builds, and in a loop it *aborts* —
+`libc++abi`, no traceback. Both fixed; `bug_log.txt` [9]. The bundle fingerprint is now
+stable across rebuilds, which is the property that makes it worth having.
+
+**The re-run, 2026-10-04 — the input was not the binding constraint.**
+
+| | v14 — old bundle | **v15 — rebuilt bundle** | mustard0, same job |
+|---|---|---|---|
+| input the job read | not fingerprinted | `092fd80f0f0d`, **asserted in-job** | — |
+| anchor mask | 695 px | 7,325 px | 3,252 px |
+| rotation error, frame 0 | 175.63° | **124.27°** | — |
+| rotation error, median of 8 frames | 175.86° | **95.65°** | — |
+| translation vs map, median | 73.02 cm | **140.40 cm** | — |
+| top-16 hypotheses within 15° of best | 2/16 | **1/16** | 16/16 |
+| median pairwise angle, top-16 | 127.31° | **134.17°** | 0.29° |
+| world-frame spread | 2.08 cm over a 3.4 cm baseline | **33.17 cm** over a 20.8 cm baseline | — |
+| stage-4 gate | 0/8, refused | **0/8, refused** | — |
+
+Three readings, in the order they were committed to before the run:
+
+1. **The job read the rebuilt input.** The kernel asserted fingerprint `092fd80f0f0d`
+   before `register()` and refuses any other — which it had to do once already, when
+   the first v15 attempt raced the dataset upload and mounted the old bundle
+   (`foundationpose_6dof/bug_log.txt` [10]). The answer also moved, 175.63° → 124.27°,
+   so this is not a stale result reproducing itself.
+2. **The answer changed; the verdict did not.** Hypothesis clustering — the check that
+   needs neither our map nor ground truth — is where it was: 1/16 within 15°, median
+   pairwise 134°. The estimator is still choosing among orientations it cannot tell
+   apart, while mustard0 in the *same job* converges 16/16 at 0.29°. The frame, mask and
+   instance defects were real, and fixing them was necessary, but **none of them was the
+   binding constraint**.
+3. **The 2.08 cm self-consistency is withdrawn.** Given views that actually differ, the
+   tracked object wanders **33.17 cm** and its rotation error drifts 124° → 87° across
+   the 8 frames. The old figure was a property of eight near-identical views, as
+   suspected — now measured rather than argued.
+
+What remains between our case and the working control is the **mesh** (a one-sided TSDF
+shell against a CAD model) and the **object** (a 1.6 m thin-structured chair against a
+compact bottle), and this run cannot separate the two. One pointer from the log, recorded
+as an observation rather than a diagnosis: upstream's `reset_object` voxelises model
+points at diameter / 20, which is **8.5 cm** for a 1.71 m object and leaves **434**
+points to describe a chair.
+
+**How the re-run is kept honest.** `bundle.json` carries a **fingerprint** over mesh,
+frame identities and camera poses; `push_kaggle_pose.py` stamps it into the kernel, waits
+until Kaggle *serves* that bundle before pushing, and copies the result back only if the
+fingerprints match; `e2e_pose.py` refuses a mismatch. Three layers, because the first
+attempt showed one is not enough. `foundationpose_6dof/bug_log.txt` [8]–[10]; 21 tests in
+`pipeline/tests/test_pose_bundle.py`.
 
 **Wired regardless:** `pipeline/tools/e2e_pose.py` consumes the pose and gates it on
-translation, rotation and depth before it reaches the world model. Run against the real
-r12 output it refuses **0/8 frames corroborating** — median 73.02 cm, 175.86°, origin
+translation, rotation and depth before it reaches the world model. On v15 it refuses on
+all four checks — median 140.40 cm, 95.65°, origin up to 144.6 cm behind a surface only
+17.9 cm deep, hypotheses scattered. On the earlier r12 output it refused **0/8 frames
+corroborating** — median 73.02 cm, 175.86°, origin
 65 cm behind a surface only 13 cm deep — and the position-only pose from stage 3 stands.
 22 tests cover the gate.
 
@@ -278,7 +406,7 @@ is visible and recoverable, a silently truncated instance is neither.
 |---|---|
 | ~~**`to_scene_nodes` surface vocabulary**~~ | **Done.** `SURFACE` vs `OBJECT` is now decided by whether the instance has a horizontal slab of at least 0.25 m² — roughly a 50 × 50 cm patch, the smallest area that usefully supports something. Vocabulary-independent by construction and tested as such. See below |
 | **ROS2 container mount** | the world model runs live, but staged into the container by hand. A permanent setup needs one line: `- /Users/trish/VLAProjects/pipeline:/ws/src/pipeline:ro` |
-| **Instance density for meshing** | `monitor_4` was 578 points across 1.2 m — roughly 4–5 cm spacing. Fine for a bounding box, thin for a mesh. A denser fusion (smaller `--stride`) is the lever, at TSDF memory cost |
+| **Instance density for meshing** | `monitor_4` was 578 points across 1.2 m — roughly 4–5 cm spacing. Fine for a bounding box, thin for a mesh. A denser fusion (smaller `--stride`) is the lever, at TSDF memory cost. **Not** the lever for the pose bundle's mask size, which §2 once said it was |
 | **Kaggle token** | used across two sessions; rotate it |
 
 ---
@@ -301,8 +429,23 @@ Ordered by what unblocks the most, not by effort.
    **refuses** on today's numbers, so the chain stays position-only. The successor item
    is not "explain the error" but **"improve the mask and mesh, then re-run"** — see the
    status table at the top of this file.
-2. **Ground-truth instance labels** — unblocks mIoU, the MobileSAM trade, the `inside`
+2. ~~**Improve the mask and mesh.**~~ **DONE, 2026-10-04 — and the published cause was
+   wrong.** It was not fusion density; it was that the bundle took the first 8 frames
+   clearing a 4.4% floor, which showed 11–17% of the object where 73% was available in
+   the same sequence. Mask **842 → 6,908 px** (mustard0, the working control, is 3,252),
+   camera baseline **3.4 → 20.8 cm**, instance corroborated **11–17% → 64–74%**, all on
+   the same fusion. §2 has the table. **Re-run on a T4: still refused.** Rotation moved
+   175.63° → 124.27° but the hypotheses still do not converge, so input quality was not
+   the binding constraint.
+3. **Separate mesh from object.** The two remaining differences from the working control
+   are the mesh and the object class, and one controlled run separates them: give
+   mustard0 a mesh built the way ours is — fused from its own depth, one-sided, through
+   the same Poisson path — and keep everything else upstream's. mustard0 has ground
+   truth, so the answer is an accuracy, not a consistency. If degraded mustard0 fails,
+   the mesh pipeline is convicted and is the next thing to fix; if it still lands, the
+   problem is the chair, and the honest move is a different target object.
+4. **Ground-truth instance labels** — unblocks mIoU, the MobileSAM trade, the `inside`
    support test, and any statement about recognition. One resource, four gaps.
-3. **A CUDA box** — unblocks DROID-SLAM tracking and turns every MODELLED speedup into a
+5. **A CUDA box** — unblocks DROID-SLAM tracking and turns every MODELLED speedup into a
    measured one.
-4. **The loose ends in §5** — small, and none of them gate anything above.
+5. **The loose ends in §5** — small, and none of them gate anything above.
