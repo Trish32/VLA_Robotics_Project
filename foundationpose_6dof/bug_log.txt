@@ -409,6 +409,30 @@ Metric before/after:  frame-0 depth file   same   ->  same (checked, not assumed
                       frames 1..149 depth   by index (wrong instants)  ->  by name
 
 
+[12] The new depth-consistency gate check skipped exactly the poses it should fail hardest
+--------------------------------------------------------------------------------------------
+Date:        2026-10-05
+Fingerprint: v18's prior-tracked frames 5-7 printed "|dz| n/a", and the gate reported the
+             depth check as UNAVAILABLE for a prior-initialised result — a result it may
+             only accept when that check is available.
+
+Cause:       track_depth_residual returns inf when the rendered mesh lands on no measured
+             pixel. depth_residuals_cm mapped every non-finite value to None, and None
+             means "could not compute" (no open3d, missing files). So the most extreme
+             disagreement possible was filed as missing data, and check_pose skips None.
+
+Consequence: none on v18 — those frames failed translation, rotation and depth-behind, and
+             the run was refused regardless. On a register() result it would have let a pose
+             rendered entirely off the object pass this check silently. Introduced and
+             caught in the same session, on the first real input that reached the case.
+
+Fix:         inf is kept as inf and fails with "rendered mesh covers no measured pixel";
+             None is reserved for genuinely unavailable inputs. One test pins it.
+
+Metric before/after:  v18 prior frames 5-7   n/a (skipped)  ->  inf (FAIL)
+                      v18 prior median |dz|  103.89 cm over 5 frames  ->  125.85 cm over 8
+
+
 VERIFICATION STATUS — local vs cloud
 --------------------------------------
 LOCALLY VERIFIED (CPU, no nvdiffrast, no pytorch3d):

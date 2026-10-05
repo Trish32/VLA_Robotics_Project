@@ -240,3 +240,15 @@ def test_depth_residuals_on_the_real_bundle():
         map_poses.append(T)
     r = depth_residuals_cm(map_poses, frames, BUNDLE, meta["depth_scale"], meta["K"])
     assert all(x is not None and x < 8.0 for x in r)
+
+
+def test_a_mesh_rendered_off_the_object_fails_rather_than_skipping():
+    """No overlap with any measured pixel is the largest disagreement, not missing data.
+
+    The first version mapped it to None (= check unavailable), which would have let a pose
+    rendered entirely off the object pass. v18's prior-tracked frames 5-7 landed there.
+    """
+    c = _gate_dz(float("inf"))
+    assert not c.accepted
+    assert any("covers no measured pixel" in r for r in c.reasons)
+

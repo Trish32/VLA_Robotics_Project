@@ -163,9 +163,11 @@ def check_pose(
     # 8 cm is the bundle's existing corroboration tolerance (`--depth-tol`), not a value
     # tuned to those numbers.
     if depth_residual_cm is not None and depth_residual_cm > max_depth_residual_cm:
-        reasons.append(f"rendered mesh disagrees with measured depth by "
-                       f"{depth_residual_cm:.1f} cm (median under the mask) > "
-                       f"{max_depth_residual_cm:.0f} cm")
+        reasons.append(
+            "rendered mesh covers no measured pixel under the mask"
+            if not np.isfinite(depth_residual_cm) else
+            f"rendered mesh disagrees with measured depth by {depth_residual_cm:.1f} cm "
+            f"(median under the mask) > {max_depth_residual_cm:.0f} cm")
 
     return PoseCheck(frame=frame, translation_cm=translation_cm, rotation_deg=rotation_deg,
                      behind_surface_cm=behind_cm, accepted=not reasons, reasons=reasons,
@@ -175,8 +177,12 @@ def check_pose(
 def depth_residuals_cm(poses, frames, bundle: Path, depth_scale: float, K) -> list[float | None]:
     """Per frame: median |rendered mesh depth - measured depth| under the mask, in cm.
 
-    None where it cannot be computed (no open3d, missing files) — the check is then
-    skipped and that is printed, never silently passed.
+    None ONLY where it cannot be computed (no open3d, missing files) — the check is then
+    skipped and that is printed. A pose whose rendered mesh lands on no measured pixel is
+    NOT that case: it is the largest disagreement there is, and it is returned as inf so
+    it fails. The first version mapped it to None, which would have let a pose rendered
+    entirely off the object pass this check silently; v18's prior-tracked frames 5-7
+    were the first to land there.
     """
     try:
         import cv2
@@ -198,7 +204,7 @@ def depth_residuals_cm(poses, frames, bundle: Path, depth_scale: float, K) -> li
             continue
         dm = np.where(m > 0, d.astype(np.float32) / depth_scale, 0.0)
         r = track_depth_residual(V, F, np.asarray(T, float), np.asarray(K, float), dm)
-        out.append(None if not np.isfinite(r) else r * 100)
+        out.append(float("inf") if not np.isfinite(r) else r * 100)
     return out
 
 
@@ -319,9 +325,13 @@ def main() -> int:
         print(f"[4 pose ]  hypothesis agreement: {'ok' if agree_ok else 'SCATTERED'} — "
               f"{agree_detail}")
     rs = [c.depth_residual_cm for c in checks if c.depth_residual_cm is not None]
+    n_off = sum(1 for r in rs if not np.isfinite(r))
+    if n_off:
+        print(f"[4 pose ]  {n_off} frame(s) where the rendered mesh covers no measured pixel")
     if rs:
         print(f"[4 pose ]  depth consistency: median {np.median(rs):.2f} cm over "
-              f"{len(rs)} frames (limit {args.max_depth_residual_cm:.0f} cm)")
+              f"{len(rs)} frames (limit {args.max_depth_residual_cm:.0f} cm)"
+              + (f", {n_off} of them off the object entirely" if n_off else ""))
 
     accepted = n_ok > len(checks) // 2 and agree_ok
     refined = None
@@ -382,6 +392,7 @@ def main() -> int:
                        "depth_residual_cm": args.max_depth_residual_cm},
         "initialization": result.get("initialization", "register"),
         "median_depth_residual_cm": float(np.median(rs)) if rs else None,
+        "frames_off_object": n_off if rs else None,
         "agreement_ok": bool(agree_ok), "agreement_detail": agree_detail,
         "agreement": result.get("agreement"),
         "per_frame": [vars(c) for c in checks],

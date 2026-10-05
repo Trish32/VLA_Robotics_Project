@@ -242,3 +242,43 @@ the camera measured; it does not independently confirm the map's rotation beyond
 that depth constrains. The object is static, so this measures holding and sharpening a
 pose — tracking a *moving* object, the case FoundationPose exists for, is untested.
 
+### Result (v18) — read against the rule above, which was not edited
+
+**Void checks.** The prior section ran (`PRIOR_OK`), its fingerprint matched, and the
+gate's depth check was available on all 8 frames. Not void.
+
+**Q1 — the scorer prefers `register()`'s pose:** 134.28 against 133.94 for the map pose,
+in one batch. The map pose scored the same before and after refinement (133.9375 both —
+the scores are fp16, quantised to 1/16 here). By the rule: the scorer is fooled.
+
+**Q2 — refused, which is the deciding row.**
+
+| | map pose (measured locally) | after one refinement from it | tracked 8 frames from there |
+|---|---|---|---|
+| depth residual, frame 0 | **3.77 cm** | **85.24 cm** | — |
+| depth residual, median of 8 | 3.87 cm | — | **125.85 cm**, 3 frames off the object entirely |
+| vs map, frame 0 | — | 84.28 cm, 14.11° | — |
+| gate | — | — | **0/8, refused** |
+
+**One refinement step from a pose that explains the depth to 3.8 cm moves it 77 cm and
+makes it 22× worse.** By the registered row: FoundationPose's refiner cannot hold even a
+correct start on this object — **object-scale limit; change target.**
+
+**A lead, not a cause.** With this checkpoint's config (`normalize_xyz: true`,
+`trans_rep: tracknet`) the refiner's translation step is its raw output × mesh diameter / 2
+(`predict_pose_refine.py:229`): **0.85 m per unit for the chair**, ~0.11 m for mustard0.
+But scaling is not the explanation by itself — 77 cm is **0.9 units even in normalised
+terms**, a step the same network does not take on the bottle. Its prediction is wrong on
+this input: a 1.7 m object at 2 m, cropped to 160 × 160 (thin legs a pixel or two wide),
+from Kinect-v1 depth. That is an out-of-distribution reading, and it is untested here.
+
+**What this closes.** The earlier "chair case as a whole" bundled four things — object,
+range, mask and trajectory. v18 removes two of them as candidates for *this* failure: the
+map pose, built from that trajectory and that mesh, explains the depth to 3.9 cm, and the
+estimator still leaves it. The failure is FoundationPose on this object.
+
+**Gate defect found by this run, fixed.** A mesh rendered onto no measured pixel was
+recorded as "check unavailable" rather than as the largest disagreement there is. It
+changed nothing here, but it would have let a pose rendered entirely off the object pass
+the depth check. `bug_log.txt` [12].
+

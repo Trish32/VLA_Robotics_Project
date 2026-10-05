@@ -207,9 +207,12 @@ own depth, our outlier rejection and Poisson, at the chair's relative resolution
 within **2.95°** of its CAD pose, 16/16 hypotheses agreeing. So the mesh recipe is not the
 limit either. A second control gave the bottle exactly the chair's coverage — **31°** of view
 direction — and it still registers within **4.79°**, 16/16. So coverage is cleared too. What
-remains is the chair case as a whole: a 1.6 m thin object at 2 m, meshed along an ORB-SLAM3
-trajectory from a *dynamic* sequence (ATE 18.7 cm). The next target is on `fr1/xyz`, a static
-scene where the same SLAM reaches 1.03 cm.
+remains is the chair case as a whole — and a third run located it. Our own mesh, placed at the
+pose our map gives it, explains the measured depth to **3.9 cm**; FoundationPose's scorer still
+prefers its own pose, 74–166 cm off, and one refinement step from the right pose walks **77 cm**
+away from it. The inputs are adequate; the estimator fails on this object — 1.7 m and thin, at
+2 m. The gate now checks rendered depth against measured depth, which needs no map at all. The
+next target is a compact desk object on `fr1/xyz`.
 
 The 6-DoF path is nonetheless wired: `tools/e2e_pose.py` consumes the pose and calls
 `refine_with_pose` **behind a gate** on translation, rotation and depth. On today's

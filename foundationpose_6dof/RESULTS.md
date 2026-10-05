@@ -63,6 +63,25 @@ bundle took consecutive frames. A tracker that ignored its input entirely would 
 still across them, so the check had almost no leverage to begin with. The rebuilt bundle
 spans **20.8 cm**, and over it the spread is **33.17 cm** — the 2.08 cm is withdrawn.
 
+## Map prior: start FoundationPose from our map's pose · MEASURED (Kaggle T4, v18)
+
+Rule committed in `bd5ebf3` before launch. Locally, beforehand: our mesh at the map's pose
+explains the measured depth to **1.3–6.0 cm**; `register()`'s pose misses the same pixels
+by **74–166 cm**.
+
+| | result |
+|---|---|
+| scorer, one batch: `register()` best vs map pose | **134.28 vs 133.94** — prefers `register()` |
+| one refinement from the map pose | moves it **77.33 cm, 14.11°**; depth residual 3.77 → **85.24 cm** |
+| tracked 8 frames from there | median depth residual **125.85 cm**, 3 frames off the object; gate **0/8** |
+
+**FoundationPose leaves a correct pose for a wrong one on this object** — its scorer
+ranks the wrong pose higher and its refiner walks away from the right one. By the
+registered rule that is an object-scale limit, and the move is a different target. The
+refiner's step is output × diameter / 2 (0.85 m/unit here), but the 77 cm step is 0.9
+units even normalised, so the network's prediction itself is off on this input — a lead
+toward out-of-distribution, untested. [Plan.md](Plan.md).
+
 ## Coverage sweep: mustard0 at the chair's coverage · MEASURED (Kaggle T4, v17)
 
 Rule committed in `1369ec1` before launch. No void check fired: the CAD track agrees with
@@ -216,7 +235,8 @@ the top two rows were both about mesh quality and the measured cause was neither
 | ~~re-run `register()` on the rebuilt bundle~~ | the gain was measured on the input only | **DONE (v15): still refused.** 175.63° → 124.27°, hypotheses still scattered 1/16. Input quality was not binding |
 | ~~mesh recipe~~ | fusion → ~1k points → Poisson, at the chair's relative resolution | **CLEARED (v16b).** mustard0 meshed the chair's way, wide coverage: 2.95°, 0.08 cm, 16/16 |
 | ~~coverage~~ | the chair is seen over at most 31.4° | **CLEARED (v17).** mustard0 at 31.3° of coverage: 4.79°, 0.29 cm, 16/16 |
-| **the chair case** | object, range, mask and — first to test — the SLAM trajectory the mesh is fused along | **next.** A target on TUM `fr1/xyz`: static scene, ORB-SLAM3 at ATE 1.03 cm. Changes object and trajectory together; said so up front |
+| ~~the chair's mesh and trajectory~~ | were the remaining suspects after v17 | **CLEARED (v18).** The map pose built from them explains the depth to 3.9 cm; FoundationPose's refiner leaves it (77 cm in one step) and its scorer prefers the wrong pose |
+| **FoundationPose on this object** | a 1.7 m thin object at 2 m, 160 × 160 crop, Kinect-v1 depth | **next.** A compact rigid target — TUM `fr1/xyz` has them, ORB-SLAM3 at 1.03 cm |
 | ~~denser fusion (smaller `--stride`)~~ | published as "bigger masks and a less ragged shell" | **REFUTED.** On a frame where the chair is in view, 73% of its points agree with measured depth to a −1.1 cm median — the fusion was never the limit |
 | ~~a cleaner instance~~ | `chair_4` was called a 1.58 m *region*, not an object | **CLOSED.** Outlier rejection before meshing takes it to 0.59 m tall, and `survey_instances.py` scored all 5 instances: `chair_4` leads every column, **93 frames over the visibility bar** against the runner-up's 13, and 2 of 5 are not poseable at all. No cleaner instance exists in this scene |
 | multi-view registration | one view cannot fix an orientation a second view would — and the old bundle's 8 views spanned **1.1°**, so it had no second view to offer | upstream supports it; the bundle now spans 20.8 cm |
