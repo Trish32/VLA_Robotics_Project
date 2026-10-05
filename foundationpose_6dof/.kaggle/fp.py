@@ -17,7 +17,7 @@
 # load, which is the Fidelity Rule's first half and cannot be checked on the Mac.
 import os, subprocess, sys, torch, traceback
 
-KERNEL_VERSION = "v15-rebuilt-bundle"
+KERNEL_VERSION = "v16-mesh-control"
 
 # Stamped by tools/push_kaggle_pose.py at push time with the fingerprint of the bundle
 # it uploaded. The job then asserts that the dataset Kaggle actually mounted is that one.
@@ -34,6 +34,12 @@ KERNEL_VERSION = "v15-rebuilt-bundle"
 # repeat means "same input" long before it means "same geometry". Rather than rely on
 # noticing that after the fact, the job proves which bundle it read, in the output.
 EXPECTED_FINGERPRINT = None          # replaced at push time; None = pushed by hand
+
+# Stamped by tools/push_kaggle_pose.py with the VERBATIM source of the functions that
+# built the chair's mesh -- `observations.reject_outliers`, `build_pose_bundle.
+# poisson_mesh` -- and `foundationpose_6dof/mesh_control.py`. The mesh control below asks
+# whether OUR mesh pipeline is the limit, so it must run our code, not a re-typing of it.
+OURWAY_SOURCE = None
 
 print(f"=== {KERNEL_VERSION} ===", flush=True)
 
@@ -465,3 +471,134 @@ try:
 except Exception:
     traceback.print_exc()
     print("RESULT: CONTROL_FAILED")
+
+
+# ---------------------------------------------------------------------------------------
+# MESH CONTROL -- is the chair's failure our mesh pipeline, or the chair?
+#
+# v15 removed every input defect upstream of the mesh and the top-16 hypotheses still
+# scattered (1/16 within 15 deg), while mustard0 in the same job converged 16/16 on its
+# CAD mesh. Those two differ in mesh AND object. This holds the object fixed and swaps
+# only the mesh: mustard0, same frame, same upstream mask, same estimator -- with a mesh
+# built the chair's way, from fused depth.
+#
+# The reference is the CAD mesh's own register() on frame 0, which is the validated pose
+# (origin 2.06 cm behind the surface; 16/16 hypotheses agree). mustard0 ships no
+# annotated poses, so this is the best reference available, and it is labelled as such.
+# CAD tracking over the sequence gives the camera trajectory in the object frame, which
+# plays the part SLAM plays for the chair.
+# ---------------------------------------------------------------------------------------
+print(f"\n{'='*70}\n[mesh control: mustard0 with a mesh built our way]\n{'='*70}", flush=True)
+try:
+    if OURWAY_SOURCE is None:
+        raise SystemExit("OURWAY_SOURCE was not stamped -- push with tools/push_kaggle_pose.py")
+    ow = {}
+    exec(OURWAY_SOURCE, ow)
+    reject_outliers_, poisson_mesh_ = ow["reject_outliers"], ow["poisson_mesh"]
+
+    rgbs = sorted(Path(f"{root}/rgb").glob("*.png"))
+    deps = sorted(Path(f"{root}/depth").glob("*.png"))
+    msks = sorted(Path(f"{root}/masks").glob("*.png"))
+    if not (len(rgbs) == len(deps) and len(msks) >= 1):
+        raise SystemExit(f"mustard0 layout: {len(rgbs)} rgb, {len(deps)} depth, {len(msks)} masks")
+    print(f"  mustard0: {len(rgbs)} rgb / {len(deps)} depth / {len(msks)} masks", flush=True)
+
+    def frame_c(i):
+        rgb = cv2.cvtColor(cv2.imread(str(rgbs[i])), cv2.COLOR_BGR2RGB)
+        raw = cv2.imread(str(deps[i]), cv2.IMREAD_ANYDEPTH)
+        d = raw.astype(np.float32) / 1000.0
+        d[(d < 0.1) | (d > 4.0)] = 0
+        return rgb, raw, d
+
+    # -- 1. reference trajectory: CAD tracking. est_c was registered on frame 0 above.
+    track_ids = list(range(0, min(len(rgbs), 300), 2))
+    P = {0: pose_c}
+    for i in track_ids[1:]:
+        rgb, _, d = frame_c(i)
+        P[i] = np.asarray(est_c.track_one(rgb=rgb, depth=d, K=K_c, iteration=2)).reshape(4, 4)
+    angles = ow["view_angles"]([P[i] for i in track_ids])
+    print(f"  tracked {len(track_ids)} frames with the CAD mesh; view angle vs frame 0: "
+          f"max {angles.max():.1f} deg, median {np.median(angles):.1f} deg", flush=True)
+
+    # Masks: upstream's when it ships one per frame. If it ships only frame 0's (it is a
+    # tracking demo), each later frame's mask is the CAD mesh projected at its tracked
+    # pose, convex-hulled. Which one was used is printed, so nobody reads the fused shell
+    # as built from upstream's masks throughout when it was not.
+    print(f"  fusion masks: {'upstream, per frame' if len(msks) == len(rgbs) else 'frame 0 upstream, rest projected from the CAD track'}", flush=True)
+    def cad_mask(i, shape):
+        v = mesh_c.vertices @ P[i][:3, :3].T + P[i][:3, 3]
+        uv = (v @ K_c.T)
+        u = np.round(uv[:, 0] / uv[:, 2]).astype(int); w_ = np.round(uv[:, 1] / uv[:, 2]).astype(int)
+        m = np.zeros(shape, np.uint8)
+        ok = (u >= 0) & (u < shape[1]) & (w_ >= 0) & (w_ < shape[0])
+        m[w_[ok], u[ok]] = 255
+        hull = cv2.convexHull(np.stack([u[ok], w_[ok]], 1).astype(np.int32))
+        cv2.fillConvexPoly(m, hull, 255)
+        return m > 0
+
+    longest = float(mesh_c.extents.max())
+    voxel = ow["relative"](ow["CHAIR_VOXEL_M"], longest)
+    centre = mesh_c.bounds.mean(axis=0)
+    print(f"  matched to the chair: voxel {voxel*1000:.2f} mm "
+          f"({longest/voxel:.0f} across; chair {1.58/0.02:.0f}), "
+          f"point budget {ow['CHAIR_POINTS']}", flush=True)
+
+    def build(ids, tag):
+        frames = []
+        for i in ids:
+            rgb, raw, _ = frame_c(i)
+            if len(msks) == len(rgbs):           # upstream's own mask, when it has one
+                m = cv2.imread(str(msks[i]), cv2.IMREAD_GRAYSCALE) > 0
+            else:
+                m = msk_c if i == 0 else cad_mask(i, raw.shape)
+            frames.append((rgb, raw, m, P[i]))
+        pts, cols = ow["fuse_object"](frames, K_c, voxel, centre, 0.6 * longest)
+        v, f, vc, c, n = ow["ourway_mesh"](pts, cols, longest, reject_outliers_, poisson_mesh_)
+        tm = trimesh.Trimesh(vertices=v, faces=f, process=False)
+        tm.visual = trimesh.visual.ColorVisuals(
+            tm, vertex_colors=(np.clip(vc, 0, 1) * 255).astype(np.uint8))
+        print(f"  [{tag}] {len(ids)} frames fused, {len(pts)} TSDF points -> {n} after thinning "
+              f"and rejection, mesh {len(v)} verts / {len(f)} faces, "
+              f"extents {np.round(tm.extents, 3).tolist()} m", flush=True)
+        return tm, c
+
+    one_sided = [i for i, a in zip(track_ids, angles) if a <= 6.0]
+    if len(one_sided) < 5:
+        one_sided = [track_ids[j] for j in np.argsort(angles)[:8]]
+    arms = {"wide": track_ids, "one-sided": sorted(one_sided)}
+    span = {k: float(angles[[track_ids.index(i) for i in v]].max()) for k, v in arms.items()}
+    print(f"  arms: wide = {len(arms['wide'])} frames over {span['wide']:.1f} deg; "
+          f"one-sided = {len(arms['one-sided'])} frames over {span['one-sided']:.1f} deg "
+          f"(chair: ~6 deg)", flush=True)
+
+    rgb0, _, d0 = frame_c(0)
+    long_axis = int(np.argmax(mesh_c.extents))
+    out = {"reference": "CAD register() on frame 0 -- validated, not ground truth",
+           "voxel_m": voxel, "arms": {}}
+    for tag, ids in arms.items():
+        tm, c = build(ids, tag)
+        est_o = FoundationPose(
+            model_pts=tm.vertices.astype(np.float32),
+            model_normals=tm.vertex_normals.astype(np.float32),
+            mesh=tm, scorer=scorer, refiner=refiner,
+            glctx=dr.RasterizeCudaContext(), debug=0)
+        pose_o = np.asarray(est_o.register(K=K_c, rgb=rgb0, depth=d0, ob_mask=msk_c,
+                                           iteration=5)).reshape(4, 4)
+        ref_t = pose_c[:3, :3] @ c + pose_c[:3, 3]          # the CAD pose at our centroid
+        r = ow["rotation_deg"](pose_o, pose_c)
+        r_flip = ow["rotation_deg_mod_flip"](pose_o, pose_c, long_axis)
+        t = float(np.linalg.norm(pose_o[:3, 3] - ref_t) * 100)
+        agree = hypothesis_agreement(est_o, f"mustard0 / {tag} mesh")
+        print(f"  [{tag}] vs the CAD pose: rotation {r:.2f} deg "
+              f"({r_flip:.2f} allowing the long-axis flip), translation {t:.2f} cm", flush=True)
+        out["arms"][tag] = {"frames": len(ids), "view_span_deg": span[tag],
+                            "rotation_deg": r, "rotation_deg_mod_flip": r_flip,
+                            "translation_cm": t, "agreement": agree,
+                            "mesh": [len(tm.vertices), len(tm.faces)]}
+        del est_o
+        torch.cuda.empty_cache()
+    json.dump(out, open("/kaggle/working/control_mesh.json", "w"), indent=1)
+    print("RESULT: MESH_CONTROL_OK", flush=True)
+except BaseException:
+    traceback.print_exc()
+    print("RESULT: MESH_CONTROL_FAILED", flush=True)

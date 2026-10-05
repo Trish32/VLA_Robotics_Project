@@ -37,10 +37,35 @@ pairwise 134°) while mustard0 in the same job converges 16/16. The input defect
 real and not binding. The 2.08 cm self-consistency is withdrawn: 33.17 cm over a real
 baseline. [RESULTS.md](RESULTS.md) has the table.
 
-**Next: separate mesh from object.** Give mustard0 a mesh built the way ours is — fused
-from its own depth, one-sided, through the same Poisson path. It has ground truth, so the
-result is an accuracy. If it fails, the mesh pipeline is convicted; if it still lands,
-the chair is, and the honest move is a different target object.
+**Next: separate mesh from object** — running as kernel v16. mustard0 turned out to ship
+**no annotated poses**, so the reference is the CAD mesh's own `register()` on frame 0:
+the validated pose (origin 2.06 cm behind the surface, 16/16 hypotheses agree), not
+ground truth. The test mesh is built by `mesh_control.py` with the chair's recipe matched
+*relative to object size* — ~79 TSDF voxels across, 1,128 points, the same normal radius —
+and the chair's own `reject_outliers` and `poisson_mesh`, shipped into the job verbatim.
+Two arms: **wide** (every tracked frame, the robot turns the bottle) and **one-sided**
+(views within 6° of frame 0, as the chair had). Same frame, same upstream mask, same
+estimator; only the mesh differs.
+
+### Decision rule — written while v16 runs, before any of its output was read
+
+Committed locally before the job finished, so the order is checkable. Thresholds are the
+stage-4 gate's own (30°) and r14's clustering bar (≥ 8/16 within 15°), not new ones.
+Rotation is judged **allowing the bottle's 2-fold flip about its long axis**; the raw
+number is reported beside it.
+
+An arm **passes** if rotation (mod flip) ≤ 30° **and** ≥ 8/16 hypotheses cluster within 15°.
+
+| wide | one-sided | reading | next move |
+|---|---|---|---|
+| fail | fail | the mesh recipe itself (fusion → ~1k points → Poisson) is the limit, whatever the coverage | fix the mesh pipeline; the chair is not yet indicted |
+| pass | fail | one-sidedness is the limit, not the recipe | more view coverage of the target, not a better mesher |
+| pass | pass | our mesh pipeline is exonerated on this object | the chair is the problem — change target object |
+| fail | pass | tracking drift smeared the wide fusion (the SLAM-drift analogue) | report as such; it does not exonerate the recipe |
+
+**Void conditions** — the run says nothing about meshes if: the CAD track fails (fused
+mesh extents more than 50% off the CAD extents), or the one-sided arm has fewer than 5
+frames, or either arm's mesh fails to build. These are checked before the table is read.
 
 ## Then
 

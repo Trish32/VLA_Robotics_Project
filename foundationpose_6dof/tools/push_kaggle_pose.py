@@ -67,6 +67,36 @@ def authenticated_api():
 
 
 
+
+def ourway_source() -> str:
+    """The exact source of the chair's mesh recipe, for the job to exec.
+
+    `reject_outliers` and `poisson_mesh` are read with inspect from the modules the chair
+    bundle was built with, and `mesh_control.py` is read whole. Shipping source rather
+    than re-typing it in the kernel is the point: the control asks whether OUR mesh
+    pipeline is the limit, and a re-implementation would answer a different question.
+    The result is exec'd once here first, so a missing name fails locally, not on a T4.
+    """
+    import inspect
+
+    sys.path.insert(0, str(ROOT))
+    from pipeline.observations import reject_outliers
+    from pipeline.tools.build_pose_bundle import poisson_mesh
+
+    module = (ROOT / "foundationpose_6dof/mesh_control.py").read_text()
+    module = "\n".join(l for l in module.splitlines()
+                       if not l.startswith("from __future__"))
+    src = ("import numpy as np\n\n" + inspect.getsource(reject_outliers) + "\n\n"
+           + inspect.getsource(poisson_mesh) + "\n\n" + module)
+    ns: dict = {}
+    exec(src, ns)
+    for name in ("reject_outliers", "poisson_mesh", "fuse_object", "ourway_mesh",
+                 "view_angles", "rotation_deg", "rotation_deg_mod_flip", "relative"):
+        if name not in ns:
+            raise SystemExit(f"ourway source does not define {name}")
+    return src
+
+
 def wait_for_dataset(api, ref: str, fingerprint: str, minutes: float = 15.0) -> bool:
     """Block until Kaggle SERVES the bundle we just uploaded, not merely accepts it.
 
@@ -189,6 +219,12 @@ def main(argv=None) -> int:
     if stamped == source:
         raise SystemExit("could not stamp EXPECTED_FINGERPRINT into fp.py — the "
                          "placeholder line has moved; fix it rather than pushing blind")
+    # The mesh control must run the functions that built the chair's mesh, verbatim.
+    ourway = ourway_source()
+    before = stamped
+    stamped = stamped.replace("OURWAY_SOURCE = None", f"OURWAY_SOURCE = {ourway!r}", 1)
+    if stamped == before:
+        raise SystemExit("could not stamp OURWAY_SOURCE into fp.py — placeholder moved")
     (stage_k / "fp.py").write_text(stamped)
     km = json.loads((KAGGLE / "kernel-metadata.json").read_text())
     km["id"] = f"{username}/{SLUG}"
