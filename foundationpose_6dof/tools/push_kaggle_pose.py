@@ -92,7 +92,7 @@ def ourway_source() -> str:
     exec(src, ns)
     for name in ("reject_outliers", "poisson_mesh", "fuse_object", "ourway_mesh",
                  "view_angles", "rotation_deg", "rotation_deg_mod_flip", "relative",
-                 "view_span", "track_depth_residual"):
+                 "view_span", "track_depth_residual", "depth_agreement"):
         if name not in ns:
             raise SystemExit(f"ourway source does not define {name}")
     return src
@@ -268,6 +268,10 @@ def main(argv=None) -> int:
             print(f"[done]  map-prior result copied (fingerprint {got_p})")
         else:
             print(f"[done]  REFUSED to copy the map-prior result: {got_p} != {meta['fingerprint']}")
+
+    for extra in ("iteration_trace.json", "iteration_trace_mustard0.json"):
+        if (out / extra).exists():
+            print(f"[done]  {extra} retrieved")
 
     result = out / "pose_result.json"
     if result.exists():

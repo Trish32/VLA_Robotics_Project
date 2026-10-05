@@ -287,3 +287,42 @@ recorded as "check unavailable" rather than as the largest disagreement there is
 changed nothing here, but it would have let a pose rendered entirely off the object pass
 the depth check. `bug_log.txt` [12].
 
+## P1 — iteration trace (v19): decision rule, committed before the run is launched
+
+**The question, from review.** v18's 77 cm came from one refine call of **5** internal
+updates. Is the first update already wrong, or do later updates diverge? The remedy
+differs: fewer iterations can only help in the second case.
+
+**What runs.** From the map pose on frame 0, ten refiner calls of `iteration=1` in
+sequence; every iterate is checked with the gate's own `depth_agreement` (our mesh, our
+mask) and scored with `register()`'s best in one batch. Then the candidate fix, fixed now:
+**iteration = 1 on every frame**, 8 frames tracked from the map pose, through the full gate.
+A healthy baseline runs on mustard0 from its validated CAD pose.
+
+**An iterate passes** if it meets the gate's depth criteria: residual ≤ 8 cm **and**
+coverage ≥ 50%.
+
+| iterate 1 | later iterates | reading | next |
+|---|---|---|---|
+| fails | — | the **first** prediction is wrong on this input; fewer iterations cannot help | P2 |
+| passes | first failure at k ≥ 2 | **divergence** — errors compound | the iteration=1 arm decides, through the gate |
+| passes | all 10 pass | contradicts v18 | check the equivalence line; report as an anomaly |
+
+**The iteration=1 arm:** accepted by the gate → "map prior + one update per frame" is a
+candidate path into the chain; refused → it is not.
+
+**Checks before reading.**
+- *Convention check:* the map pose's frame-0 residual, computed in the job, must reproduce
+  the local 3.77 cm within 0.5 cm. Otherwise the job's geometry is not the gate's and the
+  trace is **void**.
+- *Equivalence:* 1 × (5 iterations) vs 5 × (1 iteration) within 1 cm and 1°. If not, the
+  trace is reported as diagnostic only; the iteration=1 arm still stands on its own.
+- The run is **void** if the trace section fails or the fingerprint does not match.
+
+**Descriptive only, no decision weight:** the chair's first step in half-diameters against
+mustard0's, and whether the scorer ranks any iterate above `register()`'s best.
+
+**Stated now:** even an accepted iteration=1 arm is weak evidence. It starts from the map,
+and the depth check's mask was built from depth-agreeing points. Independent confirmation
+needs held-out frames — that is P2.
+

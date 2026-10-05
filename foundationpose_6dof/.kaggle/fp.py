@@ -17,7 +17,7 @@
 # load, which is the Fidelity Rule's first half and cannot be checked on the Mac.
 import os, subprocess, sys, torch, traceback
 
-KERNEL_VERSION = "v18-map-prior"
+KERNEL_VERSION = "v19-iteration-trace"
 
 # Stamped by tools/push_kaggle_pose.py at push time with the fingerprint of the bundle
 # it uploaded. The job then asserts that the dataset Kaggle actually mounted is that one.
@@ -381,94 +381,122 @@ except Exception:
     print("RESULT: REGISTER_FAILED")
 
 
-# ---------------------------------------------------------------------------- map prior
-# Measured locally before this run: OUR chair mesh, placed at the pose OUR MAP gives it,
-# reproduces the measured depth to 1.3-6.0 cm (median under the mask) and covers 92-98% of
-# the mask. FoundationPose's register() pose misses the same pixels by 74-166 cm. So a
-# pose that explains the data exists and register() does not choose it.
+# ---------------------------------------------------------------------- iteration trace
+# v18: one refine call from the map pose (iteration=5 -> five internal updates,
+# predict_pose_refine.py:182) moved a pose that fits the depth to 3.8 cm by 77 cm. A
+# review asked the question v18 could not answer: is the FIRST update already wrong, or do
+# later updates diverge? The fix differs — fewer iterations help only in the second case.
 #
-# Two questions, both against FoundationPose's own networks:
-#   Q1  SCORER: given the map pose (refined) and register()'s best in ONE batch, which
-#       does its scorer prefer? Prefers the map pose -> register()'s SEARCH failed.
-#       Prefers its own -> the scorer itself is fooled by this object.
-#   Q2  PRIOR: refine from the map pose and track from there. Written out as
-#       pose_result_prior.json with initialization = "map_prior", for the stage-4 gate.
+# So: from the map pose, call the refiner with iteration=1, ten times in sequence, and
+# record every iterate. Depth residual and coverage are computed with OUR mesh and OUR
+# mask, by the same function the stage-4 gate uses (stamped verbatim, like the mesh
+# control). Every iterate is also scored, together with register()'s best, in one batch.
+# Then the pre-registered candidate fix: track all 8 frames from the map pose with
+# iteration=1 everywhere, written for the gate.
 #
-# Conventions, because getting them wrong would silently score a shifted pose: upstream
-# keeps poses relative to the CENTRED mesh and returns internal @ T(-centre)
-# (estimater.py:233, :268). Our map pose refers to the mesh as supplied, so internally it
-# is map @ T(+centre). register() erodes and bilateral-filters depth before refining and
-# scoring; the same is done here.
-print(f"\n{'='*70}\n[map prior: score and refine from our map's pose]\n{'='*70}", flush=True)
+# Conventions as in v18: upstream poses are relative to the CENTRED mesh; ours refer to the
+# mesh as supplied, so internally a pose is ours @ T(+centre).
+print(f"\n{'='*70}\n[iteration trace: refine from the map pose, one update at a time]\n{'='*70}", flush=True)
 try:
     from Utils import erode_depth, bilateral_filter_depth, depth2xyzmap
+    ow = {}
+    exec(OURWAY_SOURCE, ow)
+    depth_agreement_ = ow["depth_agreement"]
 
     tf_c = est.get_tf_to_centered_mesh().data.cpu().numpy()      # T(-centre)
     to_int = np.linalg.inv(tf_c)                                 # T(+centre)
-    f0 = meta["frames"][0]
-    P_map = np.eye(4)
-    P_map[:3, :3] = np.asarray(f0["R_world_to_cam"])
-    P_map[:3, 3] = f0["mesh_origin_cam"]
-    map_int = (P_map @ to_int).astype(np.float32)
-    fp_int = est.poses[0].data.cpu().numpy().reshape(4, 4).astype(np.float32)
+    # OUR geometry, reloaded from the file: upstream's reset_object may re-centre the
+    # trimesh it was handed, and the gate measures against the mesh as supplied.
+    _sup = trimesh.load(f"{B}/mesh.obj", process=False)
+    V_sup, F_sup = np.asarray(_sup.vertices), np.asarray(_sup.faces)
+
+    def pose_map(i):
+        f = meta["frames"][i]
+        P = np.eye(4)
+        P[:3, :3] = np.asarray(f["R_world_to_cam"])
+        P[:3, 3] = f["mesh_origin_cam"]
+        return P
+
+    def agreement(P_sup, i):
+        _, d, m = load(i)
+        return depth_agreement_(V_sup, F_sup, P_sup, K, np.where(m, d, 0.0))
+
+    # sanity: our geometry at the map pose must reproduce the local measurement (3.77 cm)
+    r0, c0 = agreement(pose_map(0), 0)
+    print(f"  map pose, frame 0: |dz| {r0*100:.2f} cm, cover {c0:.0%} "
+          f"(local measurement: 3.77 cm) -- geometry convention check", flush=True)
 
     rgb0, depth0, mask0 = load(0)
-    d_p = erode_depth(depth0, radius=2, device="cuda")
-    d_p = bilateral_filter_depth(d_p, radius=2, device="cuda")
+    d_p = bilateral_filter_depth(erode_depth(depth0, radius=2, device="cuda"), radius=2, device="cuda")
     xyz0 = depth2xyzmap(d_p, K)
 
-    ref, _ = est.refiner.predict(
-        mesh=est.mesh, mesh_tensors=est.mesh_tensors, rgb=rgb0, depth=d_p, K=K,
-        ob_in_cams=map_int[None], normal_map=None, xyz_map=xyz0, glctx=est.glctx,
-        mesh_diameter=est.diameter, iteration=5, get_vis=False)
-    ref_int = ref.data.cpu().numpy().reshape(4, 4).astype(np.float32)
+    def refine(P_int, n):
+        out, _ = est.refiner.predict(
+            mesh=est.mesh, mesh_tensors=est.mesh_tensors, rgb=rgb0, depth=d_p, K=K,
+            ob_in_cams=np.asarray(P_int, np.float32)[None], normal_map=None, xyz_map=xyz0,
+            glctx=est.glctx, mesh_diameter=est.diameter, iteration=n, get_vis=False)
+        return out.data.cpu().numpy().reshape(4, 4).astype(np.float32)
 
-    batch = np.stack([fp_int, map_int, ref_int])
+    def rdeg(A, B):
+        return float(np.degrees(np.arccos(np.clip((np.trace(A[:3, :3] @ B[:3, :3].T) - 1) / 2, -1, 1))))
+
+    half_d = float(est.diameter) / 2
+    start = (pose_map(0) @ to_int).astype(np.float32)
+    iters, cur = [start], start
+    for k in range(10):
+        cur = refine(cur, 1)
+        iters.append(cur)
+    five_at_once = refine(start, 5)
+    eq_t = float(np.linalg.norm(five_at_once[:3, 3] - iters[5][:3, 3]) * 100)
+    eq_r = rdeg(five_at_once, iters[5])
+    print(f"  equivalence: 1 x (5 iterations) vs 5 x (1 iteration): {eq_t:.2f} cm, {eq_r:.2f} deg", flush=True)
+
+    fp_int = est.poses[0].data.cpu().numpy().reshape(4, 4).astype(np.float32)
+    batch = np.stack([fp_int] + iters)
     sc, _ = est.scorer.predict(
         mesh=est.mesh, rgb=rgb0, depth=d_p, K=K, ob_in_cams=batch, normal_map=None,
         mesh_tensors=est.mesh_tensors, glctx=est.glctx, mesh_diameter=est.diameter,
         get_vis=False)
     sc = np.asarray(sc.float().cpu()).ravel()
 
-    def rdeg(A, B):
-        return float(np.degrees(np.arccos(np.clip((np.trace(A[:3, :3] @ B[:3, :3].T) - 1) / 2, -1, 1))))
+    trace = []
+    print(f"\n  {'k':>3}{'step cm':>9}{'step/(d/2)':>11}{'step deg':>9}{'vs map cm':>10}"
+          f"{'|dz| cm':>9}{'cover':>7}{'score':>10}", flush=True)
+    for k, P in enumerate(iters):
+        step_t = 0.0 if k == 0 else float(np.linalg.norm(P[:3, 3] - iters[k-1][:3, 3]) * 100)
+        step_r = 0.0 if k == 0 else rdeg(P, iters[k-1])
+        vs_map = float(np.linalg.norm(P[:3, 3] - start[:3, 3]) * 100)
+        r, c = agreement(P @ tf_c, 0)
+        trace.append({"k": k, "step_cm": step_t, "step_norm": step_t / 100 / half_d,
+                      "step_deg": step_r, "vs_map_cm": vs_map, "dz_cm": r * 100,
+                      "coverage": c, "score": float(sc[k + 1])})
+        print(f"  {k:3d}{step_t:9.2f}{step_t/100/half_d:11.3f}{step_r:9.2f}{vs_map:10.2f}"
+              f"{r*100:9.2f}{c:7.0%}{sc[k+1]:10.4f}", flush=True)
+    print(f"  register() best, same batch: score {sc[0]:.4f}", flush=True)
 
-    moved_r = rdeg(ref_int, map_int)
-    moved_t = float(np.linalg.norm(ref_int[:3, 3] - map_int[:3, 3]) * 100)
-    print(f"  scorer, one batch:  register() best {sc[0]:.4f}   map raw {sc[1]:.4f}   "
-          f"map refined {sc[2]:.4f}", flush=True)
-    print(f"  Q1 -> scorer prefers "
-          f"{'the MAP pose (search failed)' if sc[2] > sc[0] else 'register() pose (scorer fooled)'}",
-          flush=True)
-    print(f"  refinement moved the map pose {moved_r:.2f} deg, {moved_t:.2f} cm", flush=True)
-
-    est.pose_last = torch.as_tensor(ref_int, device="cuda", dtype=torch.float)
-    track_p = [ref_int @ tf_c]
+    # -- the pre-registered candidate fix: iteration=1 everywhere, 8 frames, for the gate
+    first = iters[1]
+    est.pose_last = torch.as_tensor(first, device="cuda", dtype=torch.float)
+    track1 = [first @ tf_c]
     for i in range(1, len(meta["frames"])):
-        r, d, _ = load(i)
-        track_p.append(np.asarray(est.track_one(rgb=r, depth=d, K=K, iteration=2)).reshape(4, 4))
-    world_p = np.array([(np.array(meta["frames"][i]["cam_to_world"]) @ T)[:3, 3]
-                        for i, T in enumerate(track_p)])
-    spread_p = float(np.linalg.norm(world_p - world_p.mean(axis=0), axis=1).max())
-    print(f"  tracked {len(track_p)} frames from the prior; world-frame spread "
-          f"{spread_p*100:.2f} cm", flush=True)
+        r_, d_, _ = load(i)
+        track1.append(np.asarray(est.track_one(rgb=r_, depth=d_, K=K, iteration=1)).reshape(4, 4))
     json.dump({
         "ok": True, "source": f"kaggle:foundationpose-nvdiffrast {KERNEL_VERSION}",
-        "initialization": "map_prior",
+        "initialization": "map_prior", "iterations_per_frame": 1,
         "target": meta["target"], "label": meta["label"],
-        "bundle_fingerprint": meta.get("fingerprint"),
-        "sequence": meta["sequence"],
-        "poses_cam_obj": [np.asarray(T).tolist() for T in track_p],
-        "world_spread_cm": spread_p * 100,
-        "scores_one_batch": {"register_best": float(sc[0]), "map_raw": float(sc[1]),
-                             "map_refined": float(sc[2])},
-        "scorer_prefers_map": bool(sc[2] > sc[0]),
-        "refine_moved": {"rotation_deg": moved_r, "translation_cm": moved_t},
+        "bundle_fingerprint": meta.get("fingerprint"), "sequence": meta["sequence"],
+        "poses_cam_obj": [np.asarray(T).tolist() for T in track1],
     }, open("/kaggle/working/pose_result_prior.json", "w"), indent=1)
-    print("RESULT: PRIOR_OK", flush=True)
+    json.dump({"map_pose_check": {"dz_cm": r0 * 100, "coverage": c0},
+               "equivalence": {"cm": eq_t, "deg": eq_r},
+               "half_diameter_m": half_d, "register_best_score": float(sc[0]),
+               "trace": trace},
+              open("/kaggle/working/iteration_trace.json", "w"), indent=1)
+    print("RESULT: TRACE_OK", flush=True)
 except Exception:
     traceback.print_exc()
-    print("RESULT: PRIOR_FAILED", flush=True)
+    print("RESULT: TRACE_FAILED", flush=True)
 
 
 # ---------------------------------------------------------------------------- control
@@ -578,6 +606,36 @@ try:
 except Exception:
     traceback.print_exc()
     print("RESULT: CONTROL_FAILED")
+
+# What a HEALTHY refiner does from a correct pose: mustard0, from its validated CAD pose,
+# one update at a time. The chair's first step is read against this, in units of the
+# mesh's half-diameter, because that is the unit the refiner's translation is scaled by
+# (predict_pose_refine.py:229).
+print(f"\n{'='*70}\n[iteration trace, healthy baseline: mustard0 from its CAD pose]\n{'='*70}", flush=True)
+try:
+    from Utils import erode_depth, bilateral_filter_depth, depth2xyzmap
+    d_pc = bilateral_filter_depth(erode_depth(dep_c, radius=2, device="cuda"), radius=2, device="cuda")
+    xyz_c = depth2xyzmap(d_pc, K_c)
+    cur_c = est_c.poses[0].data.cpu().numpy().reshape(4, 4).astype(np.float32)
+    half_c = float(est_c.diameter) / 2
+    base = []
+    for k in range(1, 6):
+        nxt, _ = est_c.refiner.predict(
+            mesh=est_c.mesh, mesh_tensors=est_c.mesh_tensors, rgb=rgb_c, depth=d_pc, K=K_c,
+            ob_in_cams=cur_c[None], normal_map=None, xyz_map=xyz_c, glctx=est_c.glctx,
+            mesh_diameter=est_c.diameter, iteration=1, get_vis=False)
+        nxt = nxt.data.cpu().numpy().reshape(4, 4).astype(np.float32)
+        st = float(np.linalg.norm(nxt[:3, 3] - cur_c[:3, 3]))
+        sr = float(np.degrees(np.arccos(np.clip((np.trace(nxt[:3, :3] @ cur_c[:3, :3].T) - 1) / 2, -1, 1))))
+        base.append({"k": k, "step_cm": st * 100, "step_norm": st / half_c, "step_deg": sr})
+        print(f"  k {k}: step {st*100:.3f} cm = {st/half_c:.4f} half-diameters, {sr:.3f} deg", flush=True)
+        cur_c = nxt
+    json.dump({"half_diameter_m": half_c, "trace": base},
+              open("/kaggle/working/iteration_trace_mustard0.json", "w"), indent=1)
+    print("RESULT: BASELINE_TRACE_OK", flush=True)
+except Exception:
+    traceback.print_exc()
+    print("RESULT: BASELINE_TRACE_FAILED", flush=True)
 
 
 # ---------------------------------------------------------------------------------------
