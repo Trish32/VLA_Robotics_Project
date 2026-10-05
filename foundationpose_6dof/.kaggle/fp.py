@@ -17,7 +17,7 @@
 # load, which is the Fidelity Rule's first half and cannot be checked on the Mac.
 import os, subprocess, sys, torch, traceback
 
-KERNEL_VERSION = "v16-mesh-control"
+KERNEL_VERSION = "v16b-mesh-control-paired"
 
 # Stamped by tools/push_kaggle_pose.py at push time with the fingerprint of the bundle
 # it uploaded. The job then asserts that the dataset Kaggle actually mounted is that one.
@@ -415,11 +415,21 @@ try:
     K_c = np.loadtxt(f"{root}/cam_K.txt").reshape(3, 3)
     mesh_c = trimesh.load(sorted(Path(f"{root}/mesh").glob("*.obj"))[0], process=False)
     rgb_f = sorted(Path(f"{root}/rgb").glob("*.png"))[0]
-    dep_f = sorted(Path(f"{root}/depth").glob("*.png"))[0]
-    msk_f = sorted(Path(f"{root}/masks").glob("*.png"))[0]
+    # Pair depth and mask to the rgb frame BY NAME, as upstream's YcbineoatReader does.
+    # Until v16 this took sorted(depth)[0] -- but mustard0 ships 1,332 depth images for
+    # 737 rgb, so "first depth" need not be frame 0's. Whether it was is printed, because
+    # every earlier claim about this control rests on it.
+    dep_f = Path(str(rgb_f).replace("/rgb/", "/depth/"))
+    msk_f = Path(str(rgb_f).replace("/rgb/", "/masks/"))
+    old_dep = sorted(Path(f"{root}/depth").glob("*.png"))[0]
+    print(f"  depth for frame 0: {dep_f.name}; pre-v16 pairing used {old_dep.name} "
+          f"-> {'SAME file' if old_dep.name == dep_f.name else 'DIFFERENT file'}", flush=True)
 
     rgb_c = cv2.cvtColor(cv2.imread(str(rgb_f)), cv2.COLOR_BGR2RGB)
-    dep_c = cv2.imread(str(dep_f), cv2.IMREAD_ANYDEPTH).astype(np.float32) / 1000.0
+    dep_raw = cv2.imread(str(dep_f), cv2.IMREAD_ANYDEPTH)
+    if dep_raw.shape != rgb_c.shape[:2]:              # upstream resizes; so do we
+        dep_raw = cv2.resize(dep_raw, rgb_c.shape[1::-1], interpolation=cv2.INTER_NEAREST)
+    dep_c = dep_raw.astype(np.float32) / 1000.0
     dep_c[(dep_c < 0.1) | (dep_c > 4.0)] = 0
     msk_c = cv2.imread(str(msk_f), cv2.IMREAD_GRAYSCALE) > 0
     print(f"  mesh {len(mesh_c.vertices)} verts, extents "
@@ -497,15 +507,22 @@ try:
     reject_outliers_, poisson_mesh_ = ow["reject_outliers"], ow["poisson_mesh"]
 
     rgbs = sorted(Path(f"{root}/rgb").glob("*.png"))
-    deps = sorted(Path(f"{root}/depth").glob("*.png"))
-    msks = sorted(Path(f"{root}/masks").glob("*.png"))
-    if not (len(rgbs) == len(deps) and len(msks) >= 1):
-        raise SystemExit(f"mustard0 layout: {len(rgbs)} rgb, {len(deps)} depth, {len(msks)} masks")
-    print(f"  mustard0: {len(rgbs)} rgb / {len(deps)} depth / {len(msks)} masks", flush=True)
+    # Depth is paired by NAME, as upstream does: there are more depth images than rgb
+    # (1,332 vs 737), so pairing by sorted index pairs the wrong instants.
+    deps = [Path(str(f).replace("/rgb/", "/depth/")) for f in rgbs]
+    missing = [d.name for d in deps if not d.exists()]
+    msks = [Path(str(f).replace("/rgb/", "/masks/")) for f in rgbs]
+    msks = [m for m in msks if m.exists()]
+    if missing:
+        raise SystemExit(f"{len(missing)} rgb frames have no same-named depth, e.g. {missing[:3]}")
+    print(f"  mustard0: {len(rgbs)} rgb, each with its same-named depth; "
+          f"{len(msks)} upstream mask(s)", flush=True)
 
     def frame_c(i):
         rgb = cv2.cvtColor(cv2.imread(str(rgbs[i])), cv2.COLOR_BGR2RGB)
         raw = cv2.imread(str(deps[i]), cv2.IMREAD_ANYDEPTH)
+        if raw.shape != rgb.shape[:2]:
+            raw = cv2.resize(raw, rgb.shape[1::-1], interpolation=cv2.INTER_NEAREST)
         d = raw.astype(np.float32) / 1000.0
         d[(d < 0.1) | (d > 4.0)] = 0
         return rgb, raw, d
@@ -549,6 +566,9 @@ try:
             rgb, raw, _ = frame_c(i)
             if len(msks) == len(rgbs):           # upstream's own mask, when it has one
                 m = cv2.imread(str(msks[i]), cv2.IMREAD_GRAYSCALE) > 0
+                if m.shape != raw.shape:
+                    m = cv2.resize(m.astype(np.uint8), raw.shape[::-1],
+                                   interpolation=cv2.INTER_NEAREST) > 0
             else:
                 m = msk_c if i == 0 else cad_mask(i, raw.shape)
             frames.append((rgb, raw, m, P[i]))
