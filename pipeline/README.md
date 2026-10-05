@@ -202,8 +202,11 @@ rebuilt bundle — verified in-job by fingerprint — rotation moved **175.63° 
 but the top-16 hypotheses still do not agree on an orientation (1/16 within 15°), while
 upstream's mustard0 in the same job converges 16/16. The old **2.08 cm** self-consistency
 is withdrawn: over views that actually differ the tracked object wanders **33.17 cm**.
-What remains is the mesh or the object, and the next run separates the two by giving
-mustard0 a mesh built the way ours is.
+Then a control: upstream's mustard0 given a mesh built **exactly our way** — fused from its
+own depth, our outlier rejection and Poisson, at the chair's relative resolution — registers
+within **2.95°** of its CAD pose, 16/16 hypotheses agreeing. So the mesh recipe is not the
+limit either. What is still open is coverage versus the object itself: the chair is only
+ever seen across **31°** of view direction, and the next run gives the bottle exactly that.
 
 The 6-DoF path is nonetheless wired: `tools/e2e_pose.py` consumes the pose and calls
 `refine_with_pose` **behind a gate** on translation, rotation and depth. On today's

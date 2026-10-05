@@ -67,6 +67,53 @@ An arm **passes** if rotation (mod flip) ≤ 30° **and** ≥ 8/16 hypotheses cl
 mesh extents more than 50% off the CAD extents), or the one-sided arm has fewer than 5
 frames, or either arm's mesh fails to build. These are checked before the table is read.
 
+### Result (v16b) — read against the rule above, which was not edited
+
+**First, the reference.** v16's first attempt voided on a layout guard (737 rgb, 1,332
+depth, 1 mask), which exposed that the CAD control had paired frame 0's depth by sorted
+index. v16b pairs by name and printed: **same file**. The 2.06 cm validation stands.
+`bug_log.txt` [11].
+
+**Then the void conditions, literally.**
+
+| | fused extents vs CAD [9.7, 6.7, 19.1] cm | frames | mesh built | void? |
+|---|---|---|---|---|
+| wide | +8 / +19 / +8 % | 150, over 76.4° | 3,457 v / 6,738 f | **no** |
+| one-sided | +35 / **+75** / +3 % | 42, over 4.4° | 4,135 v / 8,082 f | **yes — the registered extents test** |
+
+**Then the table.**
+
+| arm | rotation vs CAD (mod flip) | translation | top-16 within 15° | median pairwise | verdict |
+|---|---|---|---|---|---|
+| wide | **2.95°** (2.95°) | **0.08 cm** | **16/16** | 0.49° | **PASS** |
+| one-sided | 5.74° (5.74°) | 0.67 cm | 16/16 | 0.97° | passes on the numbers, **VOID** |
+| *chair, same job* | *124.27°* | *113.13 cm* | *1/16* | *134.17°* | *fail — reproduced exactly from v15* |
+
+**What this establishes.** Wide passes and is not void, which rules out two rows: our mesh
+recipe — TSDF fusion, ~1.1k points, `reject_outliers`, `poisson_mesh`, at the chair's
+relative resolution — **is not the limit**. A bottle meshed exactly the chair's way
+registers to within 3° of its CAD pose and the estimator converges 16/16.
+
+**What it does not establish.** Whether one-sidedness or the chair itself is the limit.
+The one-sided arm passes on every number, but the rule says it is void, and it stays
+void. The case that the void test misfired is real — it was a proxy for a failed CAD
+track, the wide arm fused over a superset of the same track sits within 19%, and the
+one-sided mesh lands 0.67 cm from the CAD pose — but that argument was made after reading
+the data, which is exactly what the registration exists to stop. It is recorded as an
+argument, not a result.
+
+**One fact for the next step, measured locally:** over the whole TUM sequence the chair
+is seen along view directions spanning at most **31.4°** (p95 19.8°) — between the two
+arms, nearer the one-sided one. Its mesh already uses every one of those views.
+
+**Next, registered before it runs:** a coverage sweep on mustard0 at 4°, 15° and **31°**,
+with the void test replaced by what it was meant to measure — CAD-track agreement with
+the measured depth, per fused frame — rather than an extent proxy. The 31° arm is the
+decisive one: it gives the bottle the chair's coverage. If it passes, coverage is not
+the chair's problem and the chair is; if it fails, coverage is, and the move is more
+views of the target, not a different mesher.
+
+
 ## Then
 
 - [x] Wire the pose into the scene graph — `pipeline/tools/e2e_pose.py` consumes the

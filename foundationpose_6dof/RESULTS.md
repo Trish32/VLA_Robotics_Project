@@ -63,6 +63,27 @@ bundle took consecutive frames. A tracker that ignored its input entirely would 
 still across them, so the check had almost no leverage to begin with. The rebuilt bundle
 spans **20.8 cm**, and over it the spread is **33.17 cm** — the 2.08 cm is withdrawn.
 
+## Mesh control: mustard0 meshed the chair's way · MEASURED (Kaggle T4, v16b)
+
+Same frame, same upstream mask, same estimator — only the mesh differs. The test mesh is
+TSDF-fused from mustard0's own depth along the CAD track and built with the chair's
+`reject_outliers` and `poisson_mesh`, shipped verbatim, at the chair's relative
+resolution (79 voxels across, ~1.1k points). Reference: the CAD mesh's `register()` on
+frame 0 — validated (2.06 cm, 16/16), not ground truth; mustard0 ships none. Decision
+rule committed in `88b0aee` before the output was read.
+
+| arm | views | rotation vs CAD | translation | top-16 within 15° | verdict |
+|---|---|---|---|---|---|
+| wide | 150 frames, 76.4° | **2.95°** | **0.08 cm** | **16/16** | **PASS** |
+| one-sided | 42 frames, 4.4° | 5.74° | 0.67 cm | 16/16 | numbers pass; **VOID** — fused extents +75% on one axis, the registered test |
+| chair (same job) | — | 124.27° | 113.13 cm | 1/16 | fail, reproduced exactly from v15 |
+
+**Our mesh recipe is not the limit** — wide passes and is not void. Whether one-sidedness
+or the chair is, this run does not decide: the one-sided arm's void stands even though
+the case that its test misfired is strong, because that case was made after reading the
+data. The chair is seen over at most **31.4°** of view direction in its whole sequence;
+the next run gives the bottle exactly that coverage. Details in [Plan.md](Plan.md).
+
 ## Re-run on the rebuilt bundle · MEASURED (Kaggle T4, v15)
 
 | | v14 — old bundle | **v15 — rebuilt bundle** | mustard0, same job |
@@ -174,7 +195,8 @@ the top two rows were both about mesh quality and the measured cause was neither
 |---|---|---|
 | ~~**frame selection**~~ | the bundle kept the first 8 frames clearing a 4.4% floor, showing **11–17%** of the chair where **73%** was available in the same sequence | **DONE.** 842 → 6,908 px, baseline 3.4 → 20.8 cm. `bug_log.txt` [8] |
 | ~~re-run `register()` on the rebuilt bundle~~ | the gain was measured on the input only | **DONE (v15): still refused.** 175.63° → 124.27°, hypotheses still scattered 1/16. Input quality was not binding |
-| **separate mesh from object** | the two remaining differences from mustard0 | **next.** Give mustard0 a mesh built our way — fused from its own depth, one-sided, same Poisson path. It has ground truth, so the answer is an accuracy. Fails → the mesh pipeline is convicted; still lands → the chair is, and the move is a different target |
+| ~~mesh recipe~~ | fusion → ~1k points → Poisson, at the chair's relative resolution | **CLEARED (v16b).** mustard0 meshed the chair's way, wide coverage: 2.95°, 0.08 cm, 16/16 |
+| **coverage vs object** | one-sided arm passed on the numbers but voided on its registered extents test | **next.** Coverage sweep at 4° / 15° / **31°** — the chair's whole-sequence span — with a void test that measures track agreement directly |
 | ~~denser fusion (smaller `--stride`)~~ | published as "bigger masks and a less ragged shell" | **REFUTED.** On a frame where the chair is in view, 73% of its points agree with measured depth to a −1.1 cm median — the fusion was never the limit |
 | ~~a cleaner instance~~ | `chair_4` was called a 1.58 m *region*, not an object | **CLOSED.** Outlier rejection before meshing takes it to 0.59 m tall, and `survey_instances.py` scored all 5 instances: `chair_4` leads every column, **93 frames over the visibility bar** against the runner-up's 13, and 2 of 5 are not poseable at all. No cleaner instance exists in this scene |
 | multi-view registration | one view cannot fix an orientation a second view would — and the old bundle's 8 views spanned **1.1°**, so it had no second view to offer | upstream supports it; the bundle now spans 20.8 cm |

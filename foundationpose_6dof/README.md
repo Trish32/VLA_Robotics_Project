@@ -35,8 +35,12 @@ was weak for the same reason — its 8 frames spanned **1.1°** of view angle. `
 **The re-run then answered the question the fix was for.** On the rebuilt input,
 verified in-job by fingerprint, rotation moved 175.63° → 124.27° and the hypotheses
 still scatter (1/16 within 15°) — while mustard0 in the same job converges 16/16. The
-input defects were real and **not binding**. What remains is the mesh or the object; the
-next run separates them by giving mustard0 a mesh built our way. `bug_log.txt` [10].
+input defects were real and **not binding**. `bug_log.txt` [10].
+
+**Then the mesh recipe was cleared.** mustard0 meshed the chair's way — its own depth fused
+along the CAD track, our `reject_outliers` and `poisson_mesh` shipped verbatim, matched
+resolution — registers within **2.95°** of its CAD pose, 16/16. Still open: whether the
+chair's **31°** of view coverage, or the chair itself, is the limit. [RESULTS.md](RESULTS.md).
 
 ## Where the mesh comes from — no CAD models
 

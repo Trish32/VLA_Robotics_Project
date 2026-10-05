@@ -384,6 +384,31 @@ Metric before/after:  kernel pushed before dataset served     ->  blocked until 
                       polls after terminal status             18  ->  0
 
 
+[11] mustard0's depth was paired to rgb by sorted index, with nearly twice as many depths
+-------------------------------------------------------------------------------------------
+Date:        2026-10-04
+Fingerprint: v16's mesh control refused on its own layout guard:
+               SystemExit: mustard0 layout: 737 rgb, 1332 depth, 1 masks
+
+Cause:       Both control sections assumed one depth image per rgb frame and took them
+             by index — the CAD control used sorted(depth)[0] as frame 0's depth.
+             mustard0 ships 1,332 depth images for 737 rgb. Upstream's YcbineoatReader
+             pairs by FILENAME (rgb/X.png -> depth/X.png) and resizes depth to rgb.
+
+Consequence: for frame 0, none — v16b printed that sorted(depth)[0] IS frame 0's file,
+             so the 2.06 cm validation of the CAD control stands. For every later frame
+             it would have paired the wrong instant, and the mesh control fuses 150 of
+             them. The guard that caught it was written for a different reason (a cheap
+             "is the layout what I think" check); it is why the error surfaced as a
+             refusal rather than as a smeared mesh read as a negative result.
+
+Fix:         Pair by name, resize like upstream, refuse if any rgb lacks a same-named
+             depth. The job prints whether the old pairing used the same file.
+
+Metric before/after:  frame-0 depth file   same   ->  same (checked, not assumed)
+                      frames 1..149 depth   by index (wrong instants)  ->  by name
+
+
 VERIFICATION STATUS — local vs cloud
 --------------------------------------
 LOCALLY VERIFIED (CPU, no nvdiffrast, no pytorch3d):
