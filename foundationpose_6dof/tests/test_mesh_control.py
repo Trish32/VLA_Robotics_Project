@@ -42,8 +42,9 @@ def _render(ob_in_cam, size=(0.10, 0.07, 0.19)):
     rays = o3d.t.geometry.RaycastingScene.create_rays_pinhole(
         o3d.core.Tensor(K), o3d.core.Tensor(np.eye(4)), W, H)
     t = scene.cast_rays(rays)["t_hit"].numpy()
-    d = rays.numpy()[..., 3:]
-    z = t * d[..., 2] / np.linalg.norm(d, axis=-1)
+    # Pinhole rays have unit z-component, not unit length: depth is t * d_z, and
+    # dividing by |d| (as this helper first did) under-reads depth by up to 5%.
+    z = t * rays.numpy()[..., 5]
     hit = np.isfinite(z)
     depth = np.where(hit, z * 1000, 0).astype(np.uint16)
     rgb = np.full((H, W, 3), 128, np.uint8)
@@ -146,3 +147,39 @@ def test_ourway_mesh_uses_the_pipeline_functions_it_is_given():
     # vertices are centroid-relative, as build_pose_bundle makes the chair's
     assert np.abs(v.mean(axis=0)).max() < 0.05
     assert np.abs(centroid).max() < 0.1
+
+
+def test_view_span_is_the_largest_pairwise_angle():
+    assert mc.view_span([_pose(0), _pose(10), _pose(-21)]) == pytest.approx(31.0, abs=1e-6)
+    assert mc.view_span([_pose(5)]) == 0.0
+
+
+def _box_mesh(size=(0.10, 0.07, 0.19)):
+    """A centred box as (vertices, faces) — a stand-in for a CAD model."""
+    o3d = pytest.importorskip("open3d")
+    box = o3d.geometry.TriangleMesh.create_box(*size)
+    box.translate(-np.asarray(size) / 2)
+    return np.asarray(box.vertices), np.asarray(box.triangles)
+
+
+def test_track_depth_residual_is_small_at_the_true_pose():
+    P = _pose(15)
+    _, depth, _ = _render(P)
+    r = mc.track_depth_residual(*_box_mesh(), P, K, depth / 1000.0)
+    assert r < 0.005
+
+
+def test_track_depth_residual_catches_a_wrong_pose():
+    """A tracked pose 4 cm off in depth — the failure the void test exists to catch."""
+    P = _pose(15)
+    _, depth, _ = _render(P)
+    wrong = P.copy()
+    wrong[2, 3] += 0.04
+    assert mc.track_depth_residual(*_box_mesh(), wrong, K, depth / 1000.0) > 0.03
+
+
+def test_track_depth_residual_is_inf_when_nothing_overlaps():
+    pytest.importorskip("open3d")
+    P = _pose(0)
+    P[0, 3] = 5.0
+    assert mc.track_depth_residual(*_box_mesh(), P, K, np.ones((H, W))) == float("inf")

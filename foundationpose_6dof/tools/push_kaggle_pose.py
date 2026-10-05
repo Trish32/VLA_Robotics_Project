@@ -91,7 +91,8 @@ def ourway_source() -> str:
     ns: dict = {}
     exec(src, ns)
     for name in ("reject_outliers", "poisson_mesh", "fuse_object", "ourway_mesh",
-                 "view_angles", "rotation_deg", "rotation_deg_mod_flip", "relative"):
+                 "view_angles", "rotation_deg", "rotation_deg_mod_flip", "relative",
+                 "view_span", "track_depth_residual"):
         if name not in ns:
             raise SystemExit(f"ourway source does not define {name}")
     return src

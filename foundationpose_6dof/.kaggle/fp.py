@@ -17,7 +17,7 @@
 # load, which is the Fidelity Rule's first half and cannot be checked on the Mac.
 import os, subprocess, sys, torch, traceback
 
-KERNEL_VERSION = "v16b-mesh-control-paired"
+KERNEL_VERSION = "v17-coverage-sweep"
 
 # Stamped by tools/push_kaggle_pose.py at push time with the fingerprint of the bundle
 # it uploaded. The job then asserts that the dataset Kaggle actually mounted is that one.
@@ -527,28 +527,40 @@ try:
         d[(d < 0.1) | (d > 4.0)] = 0
         return rgb, raw, d
 
-    # -- 1. reference trajectory: CAD tracking. est_c was registered on frame 0 above.
-    track_ids = list(range(0, min(len(rgbs), 300), 2))
+    # -- 1. reference trajectory: CAD tracking over EVERY frame. v16b took every 2nd and
+    # the bottle swings from ~4 to ~75 deg quickly, so a 15 or 31 deg arm could otherwise
+    # hold almost no frames in between.
+    track_ids = list(range(0, min(len(rgbs), 300)))
     P = {0: pose_c}
+    depth_m = {}
     for i in track_ids[1:]:
         rgb, _, d = frame_c(i)
         P[i] = np.asarray(est_c.track_one(rgb=rgb, depth=d, K=K_c, iteration=2)).reshape(4, 4)
+        depth_m[i] = d
+    depth_m[0] = frame_c(0)[2]
     angles = ow["view_angles"]([P[i] for i in track_ids])
     print(f"  tracked {len(track_ids)} frames with the CAD mesh; view angle vs frame 0: "
           f"max {angles.max():.1f} deg, median {np.median(angles):.1f} deg", flush=True)
+    hist = np.histogram(angles, bins=[0, 2, 4, 6, 10, 15, 20, 25, 31, 40, 60, 90])
+    print("  frames per view-angle bin: " + ", ".join(
+        f"{int(a)}-{int(b)}:{n}" for a, b, n in zip(hist[1][:-1], hist[1][1:], hist[0])), flush=True)
 
-    # Masks: upstream's when it ships one per frame. If it ships only frame 0's (it is a
-    # tracking demo), each later frame's mask is the CAD mesh projected at its tracked
-    # pose, convex-hulled. Which one was used is printed, so nobody reads the fused shell
-    # as built from upstream's masks throughout when it was not.
+    # -- 2. the VOID test, measured directly: does the CAD model at each tracked pose agree
+    # with the measured depth? Registered threshold: per-frame median |dz| <= 1.5 cm.
+    resid = {i: ow["track_depth_residual"](mesh_c.vertices, mesh_c.faces, P[i], K_c, depth_m[i])
+             for i in track_ids}
+    r = np.array([resid[i] for i in track_ids])
+    print(f"  CAD track vs measured depth, per frame: median {np.median(r)*100:.2f} cm, "
+          f"p90 {np.percentile(r, 90)*100:.2f} cm, frames > 1.5 cm: {(r > 0.015).sum()}", flush=True)
+
     print(f"  fusion masks: {'upstream, per frame' if len(msks) == len(rgbs) else 'frame 0 upstream, rest projected from the CAD track'}", flush=True)
+
     def cad_mask(i, shape):
         v = mesh_c.vertices @ P[i][:3, :3].T + P[i][:3, 3]
         uv = (v @ K_c.T)
         u = np.round(uv[:, 0] / uv[:, 2]).astype(int); w_ = np.round(uv[:, 1] / uv[:, 2]).astype(int)
         m = np.zeros(shape, np.uint8)
         ok = (u >= 0) & (u < shape[1]) & (w_ >= 0) & (w_ < shape[0])
-        m[w_[ok], u[ok]] = 255
         hull = cv2.convexHull(np.stack([u[ok], w_[ok]], 1).astype(np.int32))
         cv2.fillConvexPoly(m, hull, 255)
         return m > 0
@@ -564,7 +576,7 @@ try:
         frames = []
         for i in ids:
             rgb, raw, _ = frame_c(i)
-            if len(msks) == len(rgbs):           # upstream's own mask, when it has one
+            if len(msks) == len(rgbs):
                 m = cv2.imread(str(msks[i]), cv2.IMREAD_GRAYSCALE) > 0
                 if m.shape != raw.shape:
                     m = cv2.resize(m.astype(np.uint8), raw.shape[::-1],
@@ -579,24 +591,44 @@ try:
             tm, vertex_colors=(np.clip(vc, 0, 1) * 255).astype(np.uint8))
         print(f"  [{tag}] {len(ids)} frames fused, {len(pts)} TSDF points -> {n} after thinning "
               f"and rejection, mesh {len(v)} verts / {len(f)} faces, "
-              f"extents {np.round(tm.extents, 3).tolist()} m", flush=True)
+              f"extents {np.round(tm.extents, 3).tolist()} m (reported, not a void test)", flush=True)
         return tm, c
 
-    one_sided = [i for i, a in zip(track_ids, angles) if a <= 6.0]
-    if len(one_sided) < 5:
-        one_sided = [track_ids[j] for j in np.argsort(angles)[:8]]
-    arms = {"wide": track_ids, "one-sided": sorted(one_sided)}
-    span = {k: float(angles[[track_ids.index(i) for i in v]].max()) for k, v in arms.items()}
-    print(f"  arms: wide = {len(arms['wide'])} frames over {span['wide']:.1f} deg; "
-          f"one-sided = {len(arms['one-sided'])} frames over {span['one-sided']:.1f} deg "
-          f"(chair: ~6 deg)", flush=True)
+    # -- 3. arms. Each takes every tracked frame within theta of frame 0. "wide" is the
+    # positive control: it passed in v16b and must pass again or the run is void.
+    arms = {f"{th} deg": [i for i, a in zip(track_ids, angles) if a <= th] for th in (4, 15, 31)}
+    arms["wide"] = list(track_ids)
+    target = {"4 deg": 4, "15 deg": 15, "31 deg": 31, "wide": None}
 
     rgb0, _, d0 = frame_c(0)
     long_axis = int(np.argmax(mesh_c.extents))
     out = {"reference": "CAD register() on frame 0 -- validated, not ground truth",
-           "voxel_m": voxel, "arms": {}}
+           "rule": "committed before this run; see foundationpose_6dof/Plan.md",
+           "voxel_m": voxel, "track_residual_m": {"median": float(np.median(r)),
+           "p90": float(np.percentile(r, 90))}, "arms": {}}
     for tag, ids in arms.items():
-        tm, c = build(ids, tag)
+        span = ow["view_span"]([P[i] for i in ids])
+        bad = [i for i in ids if resid[i] > 0.015]
+        void = []
+        if len(ids) < 5:
+            void.append(f"{len(ids)} frames < 5")
+        if target[tag] is not None and span < 0.8 * target[tag]:
+            void.append(f"span {span:.1f} deg < 0.8 x {target[tag]}")
+        if len(bad) > 0.2 * len(ids):
+            void.append(f"{len(bad)}/{len(ids)} fused frames disagree with depth by > 1.5 cm")
+        # Void is decided and printed BEFORE the pose is computed.
+        print(f"\n  [{tag}] {len(ids)} frames, view span {span:.1f} deg, "
+              f"track-depth disagreements {len(bad)}/{len(ids)} -> "
+              f"{'VOID: ' + '; '.join(void) if void else 'valid'}", flush=True)
+        rec = {"frames": len(ids), "view_span_deg": span, "void": void,
+               "track_disagreements": len(bad)}
+        try:
+            tm, c = build(ids, tag)
+        except Exception as exc:
+            print(f"  [{tag}] mesh failed to build: {exc}", flush=True)
+            rec["void"] = void + [f"mesh build failed: {exc}"]
+            out["arms"][tag] = rec
+            continue
         est_o = FoundationPose(
             model_pts=tm.vertices.astype(np.float32),
             model_normals=tm.vertex_normals.astype(np.float32),
@@ -604,17 +636,19 @@ try:
             glctx=dr.RasterizeCudaContext(), debug=0)
         pose_o = np.asarray(est_o.register(K=K_c, rgb=rgb0, depth=d0, ob_mask=msk_c,
                                            iteration=5)).reshape(4, 4)
-        ref_t = pose_c[:3, :3] @ c + pose_c[:3, 3]          # the CAD pose at our centroid
-        r = ow["rotation_deg"](pose_o, pose_c)
-        r_flip = ow["rotation_deg_mod_flip"](pose_o, pose_c, long_axis)
-        t = float(np.linalg.norm(pose_o[:3, 3] - ref_t) * 100)
-        agree = hypothesis_agreement(est_o, f"mustard0 / {tag} mesh")
-        print(f"  [{tag}] vs the CAD pose: rotation {r:.2f} deg "
-              f"({r_flip:.2f} allowing the long-axis flip), translation {t:.2f} cm", flush=True)
-        out["arms"][tag] = {"frames": len(ids), "view_span_deg": span[tag],
-                            "rotation_deg": r, "rotation_deg_mod_flip": r_flip,
-                            "translation_cm": t, "agreement": agree,
-                            "mesh": [len(tm.vertices), len(tm.faces)]}
+        ref_t = pose_c[:3, :3] @ c + pose_c[:3, 3]
+        rot = ow["rotation_deg"](pose_o, pose_c)
+        rot_f = ow["rotation_deg_mod_flip"](pose_o, pose_c, long_axis)
+        tr = float(np.linalg.norm(pose_o[:3, 3] - ref_t) * 100)
+        agree = hypothesis_agreement(est_o, f"mustard0 / {tag}")
+        passed = rot_f <= 30 and agree["clustered_within_15deg"] >= 8
+        print(f"  [{tag}] vs the CAD pose: rotation {rot:.2f} deg ({rot_f:.2f} mod flip), "
+              f"translation {tr:.2f} cm, {agree['clustered_within_15deg']}/16 cluster -> "
+              f"{'PASS' if passed else 'FAIL'}{' (VOID)' if void else ''}", flush=True)
+        rec.update(rotation_deg=rot, rotation_deg_mod_flip=rot_f, translation_cm=tr,
+                   agreement=agree, passed=bool(passed),
+                   mesh=[len(tm.vertices), len(tm.faces)])
+        out["arms"][tag] = rec
         del est_o
         torch.cuda.empty_cache()
     json.dump(out, open("/kaggle/working/control_mesh.json", "w"), indent=1)

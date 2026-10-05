@@ -122,3 +122,44 @@ views of the target, not a different mesher.
       point: the position-only pose is uninformative about rotation, a wrong 6-DoF pose
       is actively misleading, and a planner cannot tell them apart.
 - [ ] End-to-end 6-DoF grasp: the chain currently produces position-only object poses.
+
+### Coverage sweep (v17) — decision rule, committed before the run is launched
+
+The question v16b left open: is the chair's failure explained by how little of it the
+sequence shows (at most **31.4°** of view direction), or by the chair itself? mustard0 is
+meshed our way, exactly as in v16b, from frames within **4°, 15° and 31°** of frame 0,
+plus the **wide** arm again as a positive control.
+
+**Pass** (unchanged): rotation ≤ 30° allowing the long-axis flip, **and** ≥ 8/16 of the
+top hypotheses within 15°.
+
+**Void, per arm** — decided and printed in the job *before* that arm's pose is computed:
+- fewer than 5 fused frames;
+- actual view span (largest pairwise angle) below 0.8 × the arm's target;
+- more than 20% of its fused frames where the CAD model at the tracked pose disagrees
+  with measured depth by more than **1.5 cm** (per-frame median, ray-cast). This replaces
+  v16b's extents test, which fired on a one-sided shell's own shape rather than on a bad
+  track. Calibrated on synthetic data before the run: a 1.0 cm pose offset reads 1.08 cm,
+  so 1.5 cm leaves margin for sensor noise and still catches a lost track;
+- the mesh fails to build.
+
+Extents are still printed, but are no longer a void test.
+
+**The run is void** if the wide arm fails or is void: it passed in v16b, so a failure now
+means something else broke.
+
+**The decisive arm is 31°** — the bottle given the chair's coverage:
+
+| 31° arm | reading | next move |
+|---|---|---|
+| pass | coverage at the chair's level is enough for our recipe; it does not explain the chair's failure | the problem is the chair itself — change the target object |
+| fail | coverage at the chair's level is not enough | more views of the target, not a different object |
+| void | undecided | report it; no post-hoc override |
+
+The 4° and 15° arms describe the curve and carry no decision weight.
+
+**Limits, stated before the result:** one object, a compact bottle; the reference is the
+validated CAD pose, not ground truth. A 31° pass says coverage does not *explain* the
+chair's failure — it does not say which property of the chair (size, thin structure,
+symmetry) does.
+

@@ -162,3 +162,48 @@ def ourway_mesh(points: np.ndarray, colours: np.ndarray, longest_m: float,
         raise ValueError("Poisson produced no triangles inside the point box")
     return (np.asarray(mesh.vertices), np.asarray(mesh.triangles),
             np.asarray(mesh.vertex_colors), centroid, len(pts))
+
+
+def view_span(ob_in_cam: list[np.ndarray]) -> float:
+    """Largest pairwise view angle among a set of frames, in degrees.
+
+    This is the quantity measured for the chair (31.4 deg over its whole sequence), so the
+    coverage arms are judged by it rather than by distance from frame 0 alone.
+    """
+    R = [np.asarray(P)[:3, :3] for P in ob_in_cam]
+    return max((rotation_deg(a, b) for i, a in enumerate(R) for b in R[i + 1:]), default=0.0)
+
+
+def track_depth_residual(vertices: np.ndarray, faces: np.ndarray, ob_in_cam: np.ndarray,
+                         K: np.ndarray, depth_m: np.ndarray) -> float:
+    """Median |model depth - measured depth| in metres, over pixels where both exist.
+
+    The direct test of a tracked pose that v16's extent check only stood in for: put the
+    CAD model at the tracked pose, render its depth, and compare with what the depth
+    camera measured at the same pixels. Returns inf when the model covers no measured
+    pixel.
+
+    Rendered by ray-casting the TRIANGLES, not by z-buffering vertices. A first version
+    splatted vertices and was 5.5 cm off at the exact pose in its own test: 864 vertices
+    over 2,980 pixels leave gaps in the front surface, and back-face vertices fill them.
+    mustard0's CAD mesh has the same problem at its working distance — ~11k vertices,
+    roughly a third facing the camera, over ~10k pixels.
+    """
+    import open3d as o3d
+
+    h, w = depth_m.shape
+    mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(np.asarray(vertices, float)),
+                                     o3d.utility.Vector3iVector(np.asarray(faces, np.int32)))
+    mesh.transform(np.asarray(ob_in_cam, float))
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(mesh))
+    rays = o3d.t.geometry.RaycastingScene.create_rays_pinhole(
+        o3d.core.Tensor(np.asarray(K, float)), o3d.core.Tensor(np.eye(4)), w, h)
+    t = scene.cast_rays(rays)["t_hit"].numpy()
+    # Pinhole rays are NOT unit length (their z-component is 1), so t_hit already IS
+    # the depth along the optical axis: z = t * d_z with d_z = 1.
+    z = t * rays.numpy()[..., 5]
+    both = np.isfinite(z) & (depth_m > 0)
+    if not both.any():
+        return float("inf")
+    return float(np.median(np.abs(z[both] - depth_m[both])))
