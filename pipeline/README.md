@@ -205,8 +205,11 @@ is withdrawn: over views that actually differ the tracked object wanders **33.17
 Then a control: upstream's mustard0 given a mesh built **exactly our way** — fused from its
 own depth, our outlier rejection and Poisson, at the chair's relative resolution — registers
 within **2.95°** of its CAD pose, 16/16 hypotheses agreeing. So the mesh recipe is not the
-limit either. What is still open is coverage versus the object itself: the chair is only
-ever seen across **31°** of view direction, and the next run gives the bottle exactly that.
+limit either. A second control gave the bottle exactly the chair's coverage — **31°** of view
+direction — and it still registers within **4.79°**, 16/16. So coverage is cleared too. What
+remains is the chair case as a whole: a 1.6 m thin object at 2 m, meshed along an ORB-SLAM3
+trajectory from a *dynamic* sequence (ATE 18.7 cm). The next target is on `fr1/xyz`, a static
+scene where the same SLAM reaches 1.03 cm.
 
 The 6-DoF path is nonetheless wired: `tools/e2e_pose.py` consumes the pose and calls
 `refine_with_pose` **behind a gate** on translation, rotation and depth. On today's

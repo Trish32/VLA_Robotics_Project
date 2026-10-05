@@ -163,3 +163,40 @@ validated CAD pose, not ground truth. A 31° pass says coverage does not *explai
 chair's failure — it does not say which property of the chair (size, thin structure,
 symmetry) does.
 
+### Result (v17) — read against the rule above, which was not edited
+
+**Void checks, before anything else.** None fired. The CAD track agrees with measured
+depth to a median **0.19 cm** (p90 0.45 cm) and **0/300** frames exceed 1.5 cm. Every arm
+reached its target span and has well over 5 frames.
+
+| arm | frames | view span | rotation vs CAD (mod flip) | translation | top-16 within 15° | verdict |
+|---|---|---|---|---|---|---|
+| 4° | 81 | 5.8° | 3.99° | 0.33 cm | 16/16 | pass |
+| 15° | 89 | 16.1° | 4.59° | 0.47 cm | 16/16 | pass |
+| **31°** | 99 | **31.3°** | **4.79°** | **0.29 cm** | **16/16** | **PASS — decisive** |
+| wide (control) | 300 | 77.4° | 1.74° | 0.12 cm | 16/16 | pass — run is valid |
+| *chair, same job* | — | *≤ 31.4°* | *124.27°* | *113.13 cm* | *1/16* | *fail — identical to v15 and v16b* |
+
+**Reading, by the registered row:** a compact object meshed exactly our way, from exactly
+the chair's view coverage, registers within 5° of its CAD pose with every top hypothesis
+agreeing. **Coverage does not explain the chair's failure.** The registered next move is
+a different target object.
+
+**What "the chair itself" covers — the limit the rule stated, made concrete.** Two
+candidate causes are now cleared by controls (the mesh recipe, v16b; coverage, v17), and
+four input defects were fixed without effect (frames, mask, outliers, instance choice).
+What still differs between the chair case and the bottle case is everything else at once:
+
+| | chair | mustard0 control |
+|---|---|---|
+| object | 1.6 m, thin legs and frame | 0.2 m, compact |
+| distance / sensor | ~2.1 m, Kinect v1 (TUM) | ~0.78 m |
+| trajectory the mesh was fused along | ORB-SLAM3 on a **dynamic** sequence, ATE 18.7 cm | CAD track, 0.19 cm against depth |
+| mask | our projected TSDF instance | upstream's |
+
+This run cannot rank those. The trajectory row is the one worth testing first, because it
+is the only one the pipeline controls and the cheapest to change: the same stack already
+fuses TUM `fr1/xyz` — a static desk scene with compact rigid objects, ORB-SLAM3 at ATE
+**1.03 cm** — so a target there changes object *and* trajectory quality together. That is
+not a clean separation, and it is said here so it is not later read as one.
+

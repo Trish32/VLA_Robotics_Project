@@ -30,7 +30,7 @@ Two distinctions are load-bearing throughout and are never collapsed:
 | **SLAM** | REAL | ORB-SLAM3 ATE **1.03 cm**, 41.4 FPS CPU. Dynamic rejection **80.9 → 18.7 cm**, at 38.1 → 18.5 FPS — *below* a 30 Hz loop, so not described as real-time | — |
 | **DROID-SLAM** | — | checkpoint loads 0/0/0, **never executed**. Every SLAM number here is ORB-SLAM3 | unchanged |
 | **Segmentation** | REAL | checkpoint 0/0/0; sparse conv 1e-10 vs `nn.Conv3d`; 4.8× / 32.4× fewer SAM passes, four of five steps bitwise-identical. **No mIoU** — blocked on ground truth | — |
-| **6-DoF pose** | REAL | **Re-run on the rebuilt input, 2026-10-04: still refused.** Rotation 175.63° → 124.27°, but the top-16 hypotheses still scatter (1/16 within 15°) where mustard0 in the same job converges 16/16. Input quality was a real defect, not the binding one. The 2.08 cm self-consistency is **withdrawn** — 33.17 cm over a real baseline. Mesh control (v16b): mustard0 meshed **our way** registers to **2.95°**, 16/16 — the mesh recipe is cleared; coverage vs object still open. Chain stays position-only | replaces "never run" in RESULTS.md §nvdiffrast; the rebuild replaces "a denser fusion is the lever" in §2 |
+| **6-DoF pose** | REAL | **Re-run on the rebuilt input, 2026-10-04: still refused.** Rotation 175.63° → 124.27°, but the top-16 hypotheses still scatter (1/16 within 15°) where mustard0 in the same job converges 16/16. Input quality was a real defect, not the binding one. The 2.08 cm self-consistency is **withdrawn** — 33.17 cm over a real baseline. Controls on mustard0 meshed **our way** clear the mesh recipe (v16b, 2.95°) **and the chair's 31° coverage** (v17, 4.79°, 16/16). What remains is the chair case itself — first suspect, the dynamic-sequence SLAM trajectory its mesh is fused along. Chain stays position-only | replaces "never run" in RESULTS.md §nvdiffrast; the rebuild replaces "a denser fusion is the lever" in §2 |
 | **Object dynamics** | REAL | **ties identity** on two episodes; the model never leaves its initialisation. "+26.2% vs constant velocity" was retracted by `world_model/RESULTS.md` as misleading | — |
 | **Object dynamics** | SIM | **+37.4% vs identity / +60.0% vs constant velocity** on 320 episodes. This is *not* evidence about real data and is never quoted as such | — |
 | **Candidate selection** | SIM | **headroom +0.0.** Perfect episode-depth selection 99.0% = policy alone 99.0%; a winner exists at 100% of decisions. The heuristic selector's 88.5% is *below* not selecting | replaces every earlier "the scorer ranks badly" reading — see W1, W2, W8, W11 |
@@ -437,20 +437,19 @@ Ordered by what unblocks the most, not by effort.
    the same fusion. §2 has the table. **Re-run on a T4: still refused.** Rotation moved
    175.63° → 124.27° but the hypotheses still do not converge, so input quality was not
    the binding constraint.
-3. ~~**Separate mesh from object.**~~ **Half answered, 2026-10-04 (v16b).** mustard0 meshed
-   the chair's way — TSDF from its own depth, the chair's `reject_outliers` and
-   `poisson_mesh` verbatim, at the chair's relative resolution — registers within
-   **2.95°** of its CAD pose with **16/16** hypotheses agreeing, when fused over wide
-   coverage. **Our mesh recipe is not the limit.** The one-sided arm (4.4°) passed on its
-   numbers but voided on the extents test registered for it, and the void stands; so
-   "one-sidedness or the chair" is still open. (mustard0 turned out to ship no
-   annotated poses; the reference is its validated CAD pose.)
-   **Next:** a coverage sweep on mustard0 at 4°, 15° and **31°** — the chair's whole-
-   sequence view span — with the void test replaced by direct track–depth agreement,
-   registered before it runs. The 31° arm gives the bottle exactly the chair's coverage:
-   pass → the chair is the problem; fail → coverage is.
-4. **Ground-truth instance labels** — unblocks mIoU, the MobileSAM trade, the `inside`
+3. ~~**Separate mesh from object.**~~ **Answered, 2026-10-04.** Two controls on mustard0,
+   meshed exactly our way, rule committed before each run: **wide coverage registers at
+   2.95°** (v16b) and **the chair's 31° coverage at 4.79°**, 16/16 (v17). Neither the mesh
+   recipe nor the coverage explains the chair's 124°. What remains is the chair case as a
+   whole — object, sensor range, mask, and the trajectory its mesh is fused along
+   (ORB-SLAM3 on a *dynamic* sequence, ATE 18.7 cm). `foundationpose_6dof/Plan.md`.
+4. **A target on TUM `fr1/xyz`.** The same stack already fuses it: a static desk scene,
+   compact rigid objects, ORB-SLAM3 at ATE **1.03 cm**. `survey_instances.py` picks the
+   most poseable instance, then the same bundle → T4 → gate path. This changes object and
+   trajectory together — the cheapest move that could produce an *accepted* pose, not a
+   clean separation of the two, and it is labelled as such.
+5. **Ground-truth instance labels** — unblocks mIoU, the MobileSAM trade, the `inside`
    support test, and any statement about recognition. One resource, four gaps.
-5. **A CUDA box** — unblocks DROID-SLAM tracking and turns every MODELLED speedup into a
+6. **A CUDA box** — unblocks DROID-SLAM tracking and turns every MODELLED speedup into a
    measured one.
-5. **The loose ends in §5** — small, and none of them gate anything above.
+7. **The loose ends in §5** — small, and none of them gate anything above.

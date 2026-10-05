@@ -39,8 +39,9 @@ input defects were real and **not binding**. `bug_log.txt` [10].
 
 **Then the mesh recipe was cleared.** mustard0 meshed the chair's way — its own depth fused
 along the CAD track, our `reject_outliers` and `poisson_mesh` shipped verbatim, matched
-resolution — registers within **2.95°** of its CAD pose, 16/16. Still open: whether the
-chair's **31°** of view coverage, or the chair itself, is the limit. [RESULTS.md](RESULTS.md).
+resolution — registers within **2.95°** of its CAD pose, 16/16. **And so was coverage:**
+limited to the chair's **31°** of views, it still lands within **4.79°**, 16/16. What
+remains is the chair case itself. [RESULTS.md](RESULTS.md).
 
 ## Where the mesh comes from — no CAD models
 

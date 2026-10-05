@@ -63,6 +63,25 @@ bundle took consecutive frames. A tracker that ignored its input entirely would 
 still across them, so the check had almost no leverage to begin with. The rebuilt bundle
 spans **20.8 cm**, and over it the spread is **33.17 cm** — the 2.08 cm is withdrawn.
 
+## Coverage sweep: mustard0 at the chair's coverage · MEASURED (Kaggle T4, v17)
+
+Rule committed in `1369ec1` before launch. No void check fired: the CAD track agrees with
+measured depth to a median 0.19 cm, 0/300 frames over 1.5 cm.
+
+| arm | view span | rotation vs CAD | translation | top-16 within 15° | verdict |
+|---|---|---|---|---|---|
+| 4° | 5.8° | 3.99° | 0.33 cm | 16/16 | pass |
+| 15° | 16.1° | 4.59° | 0.47 cm | 16/16 | pass |
+| **31°** | **31.3°** | **4.79°** | **0.29 cm** | **16/16** | **PASS — decisive** |
+| wide (control) | 77.4° | 1.74° | 0.12 cm | 16/16 | pass |
+| chair, same job | ≤ 31.4° | 124.27° | 113.13 cm | 1/16 | fail, identical across v15 / v16b / v17 |
+
+**Coverage does not explain the chair's failure.** With the mesh recipe cleared by v16b,
+what remains is the chair case as a whole — object size and shape, sensor range, the
+mask, and above all the trajectory its mesh was fused along (ORB-SLAM3 on a dynamic
+sequence, ATE 18.7 cm, against a CAD track at 0.19 cm). This run cannot rank those.
+[Plan.md](Plan.md) has the breakdown and the next target.
+
 ## Mesh control: mustard0 meshed the chair's way · MEASURED (Kaggle T4, v16b)
 
 Same frame, same upstream mask, same estimator — only the mesh differs. The test mesh is
@@ -196,7 +215,8 @@ the top two rows were both about mesh quality and the measured cause was neither
 | ~~**frame selection**~~ | the bundle kept the first 8 frames clearing a 4.4% floor, showing **11–17%** of the chair where **73%** was available in the same sequence | **DONE.** 842 → 6,908 px, baseline 3.4 → 20.8 cm. `bug_log.txt` [8] |
 | ~~re-run `register()` on the rebuilt bundle~~ | the gain was measured on the input only | **DONE (v15): still refused.** 175.63° → 124.27°, hypotheses still scattered 1/16. Input quality was not binding |
 | ~~mesh recipe~~ | fusion → ~1k points → Poisson, at the chair's relative resolution | **CLEARED (v16b).** mustard0 meshed the chair's way, wide coverage: 2.95°, 0.08 cm, 16/16 |
-| **coverage vs object** | one-sided arm passed on the numbers but voided on its registered extents test | **next.** Coverage sweep at 4° / 15° / **31°** — the chair's whole-sequence span — with a void test that measures track agreement directly |
+| ~~coverage~~ | the chair is seen over at most 31.4° | **CLEARED (v17).** mustard0 at 31.3° of coverage: 4.79°, 0.29 cm, 16/16 |
+| **the chair case** | object, range, mask and — first to test — the SLAM trajectory the mesh is fused along | **next.** A target on TUM `fr1/xyz`: static scene, ORB-SLAM3 at ATE 1.03 cm. Changes object and trajectory together; said so up front |
 | ~~denser fusion (smaller `--stride`)~~ | published as "bigger masks and a less ragged shell" | **REFUTED.** On a frame where the chair is in view, 73% of its points agree with measured depth to a −1.1 cm median — the fusion was never the limit |
 | ~~a cleaner instance~~ | `chair_4` was called a 1.58 m *region*, not an object | **CLOSED.** Outlier rejection before meshing takes it to 0.59 m tall, and `survey_instances.py` scored all 5 instances: `chair_4` leads every column, **93 frames over the visibility bar** against the runner-up's 13, and 2 of 5 are not poseable at all. No cleaner instance exists in this scene |
 | multi-view registration | one view cannot fix an orientation a second view would — and the old bundle's 8 views spanned **1.1°**, so it had no second view to offer | upstream supports it; the bundle now spans 20.8 cm |

@@ -102,8 +102,9 @@ turned out to be a **frame-selection bug**, not the sparse shell it was publishe
 it gives **6,908 px** over the same fusion, against the working control's 3,252. Re-run on that
 input, the rotation moves to **124.27°** but the hypotheses still scatter, so the input was a real
 defect and not the binding one. A control then cleared our mesh recipe too: upstream's mustard0,
-meshed exactly our way, registers within 2.95° of its CAD pose. Open now: coverage — the chair is
-seen across only 31° — versus the chair itself.
+meshed exactly our way, registers within 2.95° of its CAD pose — and within 4.79° when limited to
+the chair's 31° of coverage. So it is the chair case itself, most likely the dynamic-scene trajectory
+its mesh is fused along; the next target is on a static sequence.
 
 ### [DexVLA](DexVLA_Robotics/) — VLM with a plug-in diffusion expert
 
