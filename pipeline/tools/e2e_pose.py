@@ -43,7 +43,9 @@ sys.path.insert(0, str(ROOT))
 # E2E_DIR lets a second scene run the same stages without overwriting the first
 # (the chair bundle and its Kaggle results are keyed to what is in the default).
 E2E = Path(os.environ.get("E2E_DIR", ROOT / "pipeline/assets/e2e"))
-BUNDLE = E2E / "pose_bundle"
+# POSE_BUNDLE points the gate at a bundle other than the scene's default one — e.g. a
+# SAM-defined target from build_sam_bundle.py.
+BUNDLE = Path(os.environ.get("POSE_BUNDLE", E2E / "pose_bundle"))
 NS_PER_S = 10 ** 9
 
 
@@ -401,11 +403,18 @@ def main() -> int:
             [np.flatnonzero(masks[i]) for i in keep], points,
             [labelled[i]["label"] for i in keep], [labelled[i]["similarity"] for i in keep],
             anchor_frame=Frames.keyframe(0), stamp_ns=10 ** 9, registry=InstanceRegistry())
-        obs = next(o for o in observations if o.node_id == meta["target"])
+        obs = next((o for o in observations if o.node_id == meta["target"]), None)
 
         best = min((c for c in checks if c.accepted or args.force),
                    key=lambda c: c.translation_cm)
         rec = next(r for r in frames if r["frame"] == best.frame)
+    if (accepted or args.force) and obs is None:
+        # A target defined outside our segmentation (a SAM click) has no scene-graph node
+        # to attach to. The accepted pose is recorded; nothing is refined in the graph.
+        print(f"[4 pose ]  {meta['target']} is not a segmentation instance "
+              f"({meta.get('target_source', 'unknown source')}); pose recorded, "
+              f"not attached to the scene graph")
+    elif accepted or args.force:
         refined = refine_with_pose(
             obs, poses[[r["frame"] for r in frames].index(best.frame)],
             np.asarray(rec["cam_to_world"], float),
@@ -445,6 +454,12 @@ def main() -> int:
         "anchor_frame": refined.anchor_frame if refined is not None else None,
         # For inspection and for the demo only. Never a substitute for `pose_world`.
         "rejected_pose_world": None if accepted else T_world_any.tolist(),
+        # An ACCEPTED pose for a target with no scene-graph node (SAM-defined) — kept,
+        # but under its own name so nothing mistakes it for a graph-attached `pose_world`.
+        "accepted_pose_world_unattached": (
+            T_world_any.tolist() if accepted and refined is None else None),
+        "target_source": meta.get("target_source"),
+        "mask_source": meta.get("mask_source"),
         "best_frame": int(best_any.frame),
     }, open(args.out, "w"), indent=1)
 

@@ -360,3 +360,53 @@ depth best. On this object, the refiner's steps are an order of magnitude too la
 converge and the scorer cannot tell good from bad. Both point the same way as v18; neither
 is a cause established by a control.
 
+## P2 — compact targets on real data (v20): decision rule, committed before launch
+
+**Why the targets are SAM-defined.** On `fr1/xyz` our Mask3D proposes no compact desk
+object at any score down to 0.2. So each target is one SAM click on frame 90
+(`pipeline/tools/build_sam_bundle.py`). **This tests FoundationPose on compact objects with
+our trajectory and our mesh recipe — not our segmentation.** Every result says so.
+
+**How each bundle answers the review's circularity point.**
+- The mesh is TSDF-fused from the trajectory's **fusion frames only** (every 10th), at the
+  chair's relative resolution, with our `reject_outliers` and `poisson_mesh`.
+- The 8 bundle frames are **held out** — none was fused into the mesh.
+- Bundle masks are **SAM per frame** (box prompt), not built from depth agreement.
+
+**Targets, by a criterion fixed before any FoundationPose output.** Longest extent ≤ 30 cm,
+≥ 8 held-out frames at ≥ 35% visible, the mesh builds. Five clicks, five qualify:
+`mouse` (14 cm), `book` (18 cm), `deskobj` (22 cm — an unidentified dark object; first
+mislabelled "stapler", renamed), `box` (24 cm), `cup` (16 cm). All five go to the T4 and
+all five are reported.
+
+**Input check, measured before the run (independent masks, held-out frames).** Our mesh
+at the map pose fits the measured depth to a median **1.0–3.4 cm**, coverage 52–100%:
+book 1.01 cm / 52%, box 1.67 / 89%, cup 3.41 / 78%, deskobj 2.00 / 99%, mouse 1.56 / 100%.
+
+**Known mask defects, disclosed, not used to select:** SAM covered only the cup's inner rim
+on its frame 7, and fragments of the box on frames 4 and 7. `register()` uses frame 0
+only, where all five masks are clean.
+
+**Per target:** `register()` on frame 0, `track_one()` over the 8 held-out frames, then the
+hardened stage-4 gate with every check — validity, translation, rotation, depth behind
+the surface, depth consistency ≥ 50% coverage, depth evidence required, hypothesis
+agreement.
+
+**The decision counts four targets: mouse, book, deskobj, box.** The cup is reported but
+does not count. Its rotation about its own axis may be ambiguous, so a correct pose can
+fail the rotation check.
+
+| accepted, of the four | reading | next |
+|---|---|---|
+| **≥ 1** | FoundationPose works on a compact object with our trajectory and mesh recipe on real data; the chair's failure is specific to the chair | wire the compact-target path; then P3 |
+| **0** | it fails on compact real objects too — the chair is not the explanation | back to inputs: real Kinect-v1 RGB-D and fused meshes, against mustard0's CAD |
+
+**Void:** a target whose bundle fingerprint does not match in-job, or whose section fails,
+is void and reported as such. The whole run is void if the mustard0 CAD control fails,
+because that is the port check.
+
+**Preflight change made for these targets, before any output:** the anchor check was an
+absolute 1,500 px floor. That equated small with partial, and it would have refused a
+14 cm mouse at its true size of ~1,200 px. It now requires ≥ 35% of the instance visible
+plus a 400 px minimum. The chair still passes.
+

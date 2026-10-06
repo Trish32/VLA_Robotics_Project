@@ -99,9 +99,18 @@ def main(argv=None) -> int:
     print(f"\n[preflight]  register() will see frame {anchor.get('source_index', '?')}: "
           f"{anchor['mask_pixels']} px, "
           f"{anchor.get('visible_fraction', float('nan')):.0%} of the instance")
-    if anchor["mask_pixels"] < 1500:
-        fail.append(f"anchor mask is {anchor['mask_pixels']} px; mustard0, the control "
-                    f"that registers correctly, has 3,252")
+    # What this guards against is a mask showing a SLIVER of the object — the chair's
+    # 695 px covered 11-17% of it. It used to be an absolute 1,500 px floor, which equates
+    # small with partial and refused a compact object at its true size (a 14 cm mouse at
+    # 1.1 m is ~1,200 px, all of it). So the floor is now on the fraction of the instance
+    # the anchor shows, plus a 400 px (20 x 20) minimum for a crop to exist at all.
+    # Changed before any FoundationPose output existed for those targets.
+    frac = anchor.get("visible_fraction")
+    if frac is not None and frac < 0.35:
+        fail.append(f"anchor shows {frac:.0%} of the instance (< 35%) — a sliver, "
+                    f"which is what failed on the chair")
+    if anchor["mask_pixels"] < 400:
+        fail.append(f"anchor mask is {anchor['mask_pixels']} px (< 400): too small to crop")
 
     if fail:
         print("\n[preflight]  REFUSED — do not spend a session on this bundle:")

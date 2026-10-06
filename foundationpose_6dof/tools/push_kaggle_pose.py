@@ -98,7 +98,20 @@ def ourway_source() -> str:
     return src
 
 
-def wait_for_dataset(api, ref: str, fingerprint: str, minutes: float = 15.0) -> bool:
+def target_bundles() -> dict[str, Path]:
+    """Extra bundles to pose in the same job, from TARGET_BUNDLES (colon-separated dirs).
+
+    Each is a directory build_sam_bundle.py wrote; it ships under targets/<name>/.
+    """
+    out = {}
+    for d in filter(None, os.environ.get("TARGET_BUNDLES", "").split(":")):
+        meta = json.load(open(Path(d) / "bundle.json"))
+        out[meta["target"]] = Path(d)
+    return out
+
+
+def wait_for_dataset(api, ref: str, fingerprint: str, minutes: float = 15.0,
+                     manifest: dict | None = None) -> bool:
     """Block until Kaggle SERVES the bundle we just uploaded, not merely accepts it.
 
     `dataset_create_version` returns as soon as the upload is accepted; the version is
@@ -119,16 +132,24 @@ def wait_for_dataset(api, ref: str, fingerprint: str, minutes: float = 15.0) -> 
             status = str(api.dataset_status(ref)).split(".")[-1].lower()
         except Exception as exc:                       # transient API errors: retry
             status = f"unknown ({type(exc).__name__})"
-        live = None
+        live, live_manifest = None, None
         if status == "ready":
             with tempfile.TemporaryDirectory() as tmp:
                 api.dataset_download_file(ref, "bundle.json", path=tmp, quiet=True)
+                if manifest is not None:
+                    api.dataset_download_file(ref, "targets.json", path=tmp, quiet=True)
                 for z in Path(tmp).glob("*.zip"):
                     zipfile.ZipFile(z).extractall(tmp)
                 f = Path(tmp) / "bundle.json"
                 live = json.load(open(f)).get("fingerprint") if f.exists() else None
-        print(f"   dataset {status}, serving fingerprint {live}", flush=True)
-        if live == fingerprint:
+                g = Path(tmp) / "targets.json"
+                live_manifest = json.load(open(g)) if g.exists() else None
+        print(f"   dataset {status}, serving fingerprint {live}"
+              + (f", targets {live_manifest}" if manifest is not None else ""), flush=True)
+        # With targets, the root bundle alone proves nothing: it is often UNCHANGED from
+        # the previous version, so it reads as current before the new version has landed
+        # — the [10] race again. The manifest is the file that changes.
+        if live == fingerprint and (manifest is None or live_manifest == manifest):
             return True
         time.sleep(20)
     return False
@@ -186,6 +207,18 @@ def main(argv=None) -> int:
             i = rec["frame"]
             for name in (f"rgb_{i:03d}.png", f"depth_{i:03d}.png", f"mask_{i:03d}.png"):
                 shutil.copy2(BUNDLE / name, stage / name)
+        targets = target_bundles()
+        if targets:
+            for name, d in targets.items():
+                dst = stage / "targets" / name
+                dst.mkdir(parents=True)
+                for f in d.iterdir():
+                    if f.name != "dataset-metadata.json" and f.is_file():
+                        shutil.copy2(f, dst / f.name)
+            (stage / "targets.json").write_text(json.dumps(
+                {n: json.load(open(d / "bundle.json"))["fingerprint"]
+                 for n, d in sorted(targets.items())}, sort_keys=True))
+            print(f"[push]  + {len(targets)} target bundles: {sorted(targets)}")
         (stage / "dataset-metadata.json").write_text(json.dumps(
             {"title": DATASET, "id": f"{username}/{DATASET}",
              "licenses": [{"name": "CC0-1.0"}]}, indent=1))
@@ -201,7 +234,11 @@ def main(argv=None) -> int:
         # Whether or not this run uploaded, never push the kernel until Kaggle is
         # serving the bundle on disk — otherwise the job mounts whatever was last ready.
         print(f"[push]  waiting for {username}/{DATASET} to serve {meta['fingerprint']}")
-        if not wait_for_dataset(api, f"{username}/{DATASET}", meta["fingerprint"]):
+        targets = target_bundles()
+        manifest = ({n: json.load(open(d / "bundle.json"))["fingerprint"]
+                     for n, d in sorted(targets.items())} if targets else None)
+        if not wait_for_dataset(api, f"{username}/{DATASET}", meta["fingerprint"],
+                                manifest=manifest):
             print("[push]  the dataset never served this bundle; not pushing a kernel "
                   "that would run on a different input")
             return 1
@@ -226,6 +263,13 @@ def main(argv=None) -> int:
     stamped = stamped.replace("OURWAY_SOURCE = None", f"OURWAY_SOURCE = {ourway!r}", 1)
     if stamped == before:
         raise SystemExit("could not stamp OURWAY_SOURCE into fp.py — placeholder moved")
+    targets = target_bundles()
+    expected_t = {n: json.load(open(d / "bundle.json"))["fingerprint"]
+                  for n, d in sorted(targets.items())}
+    before = stamped
+    stamped = stamped.replace("EXPECTED_TARGETS = {}", f"EXPECTED_TARGETS = {expected_t!r}", 1)
+    if targets and stamped == before:
+        raise SystemExit("could not stamp EXPECTED_TARGETS into fp.py — placeholder moved")
     (stage_k / "fp.py").write_text(stamped)
     km = json.loads((KAGGLE / "kernel-metadata.json").read_text())
     km["id"] = f"{username}/{SLUG}"
@@ -268,6 +312,19 @@ def main(argv=None) -> int:
             print(f"[done]  map-prior result copied (fingerprint {got_p})")
         else:
             print(f"[done]  REFUSED to copy the map-prior result: {got_p} != {meta['fingerprint']}")
+
+    for name, d in target_bundles().items():
+        r = out / f"pose_result_{name}.json"
+        if not r.exists():
+            print(f"[done]  target {name}: no result in the output")
+            continue
+        got_t = json.load(open(r)).get("bundle_fingerprint")
+        want_t = json.load(open(d / "bundle.json"))["fingerprint"]
+        if got_t == want_t:
+            shutil.copy2(r, d / "pose_result.json")
+            print(f"[done]  target {name}: result copied (fingerprint {got_t})")
+        else:
+            print(f"[done]  target {name}: REFUSED to copy, {got_t} != {want_t}")
 
     for extra in ("iteration_trace.json", "iteration_trace_mustard0.json"):
         if (out / extra).exists():

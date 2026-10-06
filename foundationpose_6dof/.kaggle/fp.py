@@ -17,7 +17,7 @@
 # load, which is the Fidelity Rule's first half and cannot be checked on the Mac.
 import os, subprocess, sys, torch, traceback
 
-KERNEL_VERSION = "v19-iteration-trace"
+KERNEL_VERSION = "v20-compact-targets"
 
 # Stamped by tools/push_kaggle_pose.py at push time with the fingerprint of the bundle
 # it uploaded. The job then asserts that the dataset Kaggle actually mounted is that one.
@@ -43,6 +43,13 @@ OURWAY_SOURCE = None
 
 # v17 answered the mesh control; v18 does not repeat it. Flip to re-run.
 RUN_MESH_CONTROL = False
+# v19 answered the iteration trace. Flip to re-run.
+RUN_ITERATION_TRACE = False
+
+# Stamped by tools/push_kaggle_pose.py: {target name: bundle fingerprint} for every extra
+# bundle shipped under targets/<name>/ (SAM-defined compact objects, P2). Each is
+# refused in-job if the mounted bundle does not carry the stamped fingerprint.
+EXPECTED_TARGETS = {}
 
 
 class _Skipped(Exception):
@@ -398,6 +405,8 @@ except Exception:
 # mesh as supplied, so internally a pose is ours @ T(+centre).
 print(f"\n{'='*70}\n[iteration trace: refine from the map pose, one update at a time]\n{'='*70}", flush=True)
 try:
+    if not RUN_ITERATION_TRACE:
+        raise _Skipped()
     from Utils import erode_depth, bilateral_filter_depth, depth2xyzmap
     ow = {}
     exec(OURWAY_SOURCE, ow)
@@ -494,9 +503,78 @@ try:
                "trace": trace},
               open("/kaggle/working/iteration_trace.json", "w"), indent=1)
     print("RESULT: TRACE_OK", flush=True)
+except _Skipped:
+    print("  skipped -- answered in v19 (RUN_ITERATION_TRACE = False)", flush=True)
 except Exception:
     traceback.print_exc()
     print("RESULT: TRACE_FAILED", flush=True)
+
+
+# ------------------------------------------------------------------ compact targets (P2)
+# The chair fails, and every input to it that could be tested has been. The open question
+# is whether FoundationPose works on a COMPACT object with our trajectory and our mesh
+# recipe, on real data. Our segmentation proposes none on fr1/xyz, so these targets are
+# SAM-defined (build_sam_bundle.py): mesh fused from the trajectory's fusion frames only,
+# bundle frames HELD OUT from that fusion, masks from SAM per frame — not from depth
+# agreement. Same register() + track_one() path as the chair; every target reported.
+print(f"\n{'='*70}\n[compact targets: {sorted(EXPECTED_TARGETS)}]\n{'='*70}", flush=True)
+for T_name in sorted(EXPECTED_TARGETS):
+    try:
+        Bt = f"{B}/targets/{T_name}"
+        mt = json.load(open(f"{Bt}/bundle.json"))
+        got_t = mt.get("fingerprint")
+        print(f"\n  [{T_name}] fingerprint {got_t}, expected {EXPECTED_TARGETS[T_name]}; "
+              f"{mt.get('target_source')}", flush=True)
+        if got_t != EXPECTED_TARGETS[T_name]:
+            print(f"  [{T_name}] STALE INPUT -- skipped", flush=True)
+            continue
+        Kt = np.array(mt["K"], dtype=np.float64)
+        mesh_t = trimesh.load(f"{Bt}/mesh.obj", process=False)
+        est_t = FoundationPose(
+            model_pts=mesh_t.vertices.astype(np.float32),
+            model_normals=mesh_t.vertex_normals.astype(np.float32),
+            mesh=mesh_t, scorer=scorer, refiner=refiner,
+            glctx=dr.RasterizeCudaContext(), debug=0)
+
+        def load_t(i):
+            r_ = cv2.cvtColor(cv2.imread(f"{Bt}/rgb_{i:03d}.png"), cv2.COLOR_BGR2RGB)
+            d_ = cv2.imread(f"{Bt}/depth_{i:03d}.png", cv2.IMREAD_ANYDEPTH).astype(np.float32) / mt["depth_scale"]
+            d_[(d_ < 0.1) | (d_ > 4.0)] = 0
+            m_ = cv2.imread(f"{Bt}/mask_{i:03d}.png", cv2.IMREAD_GRAYSCALE) > 0
+            return r_, d_, m_
+
+        r0_, d0_, m0_ = load_t(0)
+        print(f"  [{T_name}] mesh {len(mesh_t.vertices)} v, extents "
+              f"{np.round(mesh_t.extents, 3).tolist()} m; frame 0 mask {int(m0_.sum())} px", flush=True)
+        pose_t = np.asarray(est_t.register(K=Kt, rgb=r0_, depth=d0_, ob_mask=m0_,
+                                           iteration=5)).reshape(4, 4)
+        agree_t = hypothesis_agreement(est_t, T_name)
+        track_t = [pose_t]
+        for i in range(1, len(mt["frames"])):
+            r_, d_, _ = load_t(i)
+            track_t.append(np.asarray(est_t.track_one(rgb=r_, depth=d_, K=Kt, iteration=2)).reshape(4, 4))
+        world_t = np.array([(np.array(mt["frames"][i]["cam_to_world"]) @ P)[:3, 3]
+                            for i, P in enumerate(track_t)])
+        spread_t = float(np.linalg.norm(world_t - world_t.mean(axis=0), axis=1).max())
+        origin_t = np.array(mt["frames"][0]["mesh_origin_cam"])
+        R_ref_t = np.array(mt["frames"][0]["R_world_to_cam"])
+        rot_t = float(np.degrees(np.arccos(np.clip((np.trace(pose_t[:3, :3] @ R_ref_t.T) - 1) / 2, -1, 1))))
+        print(f"  [{T_name}] register: {np.linalg.norm(pose_t[:3,3]-origin_t)*100:.2f} cm, "
+              f"{rot_t:.2f} deg vs the map; world spread {spread_t*100:.2f} cm", flush=True)
+        json.dump({
+            "ok": True, "source": f"kaggle:foundationpose-nvdiffrast {KERNEL_VERSION}",
+            "target": mt["target"], "label": mt["label"],
+            "bundle_fingerprint": got_t, "sequence": mt["sequence"],
+            "target_source": mt.get("target_source"), "mask_source": mt.get("mask_source"),
+            "poses_cam_obj": [P.tolist() for P in track_t],
+            "world_spread_cm": spread_t * 100, "agreement": agree_t,
+        }, open(f"/kaggle/working/pose_result_{T_name}.json", "w"), indent=1)
+        del est_t
+        torch.cuda.empty_cache()
+        print(f"RESULT: TARGET_OK {T_name}", flush=True)
+    except Exception:
+        traceback.print_exc()
+        print(f"RESULT: TARGET_FAILED {T_name}", flush=True)
 
 
 # ---------------------------------------------------------------------------- control
