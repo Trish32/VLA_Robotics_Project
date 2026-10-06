@@ -293,6 +293,11 @@ def main() -> int:
     ap.add_argument("--scan-stride", type=int, default=1,
                     help="scan every Nth frame when ranking visibility; the scan reads "
                          "depth only, so 1 is affordable on an 859-frame sequence")
+    ap.add_argument("--mask-source", choices=["depth", "sam"], default="depth",
+                    help="depth: the depth-verified dense fill (default, unchanged). sam: SAM "
+                         "on each bundle frame, prompted by the box of the projected points — "
+                         "NOT built from depth agreement, so the gate's depth check is not "
+                         "partly true by construction. Needs segment_anything (openmask3d_vl)")
     ap.add_argument("--splat-mask", action="store_true",
                     help="fall back to the old splat+close mask instead of the "
                          "depth-verified dense fill, for A/B against a recorded run")
@@ -459,6 +464,11 @@ def main() -> int:
               f"usable run ends before the chain fills")
 
     # -- pass 2: write the selected frames.
+    predictor = None
+    if args.mask_source == "sam":
+        from segment_anything import SamPredictor, sam_model_registry
+        predictor = SamPredictor(sam_model_registry["vit_h"](
+            checkpoint=str(ROOT / "openmask3d_semantic/checkpoints/sam_vit_h_4b8939.pth")))
     written, records = 0, []
     for slot, pick in enumerate(chosen):
         index, rel, stamp, cam_stamp, k, T = by_index[pick["index"]]
@@ -469,7 +479,13 @@ def main() -> int:
         ui, vi, z, vis, _ = project_instance(
             inst_pts, world_to_cam, K, depth, args.depth_tol)
 
-        if args.splat_mask:
+        if predictor is not None:
+            pu, pv = ui[vis], vi[vis]
+            box = np.array([pu.min() - 8, pv.min() - 8, pu.max() + 8, pv.max() + 8], float)
+            predictor.set_image(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+            sm, _, _ = predictor.predict(box=box, multimask_output=False)
+            ob_mask = sm[0].astype(np.uint8) * 255
+        elif args.splat_mask:
             ob_mask = np.zeros((h, w), np.uint8)
             ob_mask[vi[vis], ui[vis]] = 255
             ob_mask = cv2.morphologyEx(ob_mask, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
@@ -538,7 +554,8 @@ def main() -> int:
             "max_tracking_step_m": max(steps) if steps else 0.0,
             "best_fraction": best,
             "baseline_span_m": span,
-            "mask": "splat+close" if args.splat_mask else "depth-verified dense fill",
+            "mask": ("SAM per frame, box prompt" if args.mask_source == "sam"
+                     else "splat+close" if args.splat_mask else "depth-verified dense fill"),
             "held_out_from_fusion": bool(args.exclude_fused_stride),
             "excluded_fused_stride": args.exclude_fused_stride,
         },

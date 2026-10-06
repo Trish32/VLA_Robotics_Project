@@ -98,6 +98,12 @@ def main() -> int:
     ap.add_argument("--stride", type=int, default=10,
                     help="use every Nth frame; 798 frames is far more than a TSDF needs")
     ap.add_argument("--query", default="monitor")
+    ap.add_argument("--voxel", type=float, default=0.02,
+                    help="TSDF voxel (m). The volume is ALSO capped at 512 voxels across the "
+                         "camera track +/- --depth-trunc, so the effective voxel is the larger "
+                         "of this and that span / 512 — on fr1/xyz at 4 m, ~1.6 cm")
+    ap.add_argument("--depth-trunc", type=float, default=4.0,
+                    help="metres of depth fused, and the padding that sets the volume's span")
     args = ap.parse_args()
 
     import cv2
@@ -147,7 +153,8 @@ def main() -> int:
     # on this sequence is pitched ~45 degrees down; every consumer below assumes z-up
     # and none of them can detect the tilt. See pipeline/gravity.py.
     scene = fuse_tsdf_levelled(frames, intr, frames[0].color.shape[:2],
-                               voxel_length=0.02, sdf_trunc=0.06, depth_trunc=4.0)
+                               voxel_length=args.voxel, sdf_trunc=3 * args.voxel,
+                               depth_trunc=args.depth_trunc)
     cloud, points = scene.cloud, np.asarray(scene.cloud.points)
     ply = OUT / f"{SEQ.name.replace('rgbd_dataset_', '')}.ply"
     o3d.io.write_point_cloud(str(ply), cloud)
