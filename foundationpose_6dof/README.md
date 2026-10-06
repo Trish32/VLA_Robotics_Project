@@ -46,7 +46,12 @@ limited to the chair's **31°** of views, it still lands within **4.79°**, 16/1
 **3.9 cm** on the same pixels; FoundationPose's scorer prefers its own pose (74–166 cm off)
 and one refinement call (5 internal iterations) from the map pose moves it **77 cm**. That
 locates the behaviour in the estimator; it does not clear the inputs, which were built from
-the same depth. [RESULTS.md](RESULTS.md).
+the same depth.
+
+**And a compact object is accepted.** A book on TUM `fr1/xyz` — held-out frames, SAM masks,
+our trajectory and mesh recipe — passes the hardened gate: 6/8 frames, 15/16 hypotheses
+agree, depth residual 0.72 cm. Registration lands within 3.4 cm on all five compact targets
+tried. [RESULTS.md](RESULTS.md).
 
 ## Where the mesh comes from — no CAD models
 

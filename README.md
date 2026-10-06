@@ -106,7 +106,9 @@ meshed exactly our way, registers within 2.95° of its CAD pose — and within 4
 the chair's 31° of coverage. A third run found that FoundationPose prefers a pose 74–166 cm off over
 our map's pose, which fits the depth to 3.9 cm on the same pixels, and refines away from it. That
 locates the behaviour in the estimator on this input; it does not clear our inputs, which were built
-from the same depth. Next: tighter acceptance checks, then a per-iteration trace, then a compact object.
+from the same depth. **Then the first accepted pose:** a book on `fr1/xyz`, held-out frames, independent
+masks, depth residual 0.72 cm. Global registration lands within 3.4 cm on every compact target tried. The
+limit is now segmentation: ours proposes no compact object there, so the target was a SAM click.
 
 ### [DexVLA](DexVLA_Robotics/) — VLM with a plug-in diffusion expert
 

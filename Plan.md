@@ -30,7 +30,7 @@ Two distinctions are load-bearing throughout and are never collapsed:
 | **SLAM** | REAL | ORB-SLAM3 ATE **1.03 cm**, 41.4 FPS CPU. Dynamic rejection **80.9 → 18.7 cm**, at 38.1 → 18.5 FPS — *below* a 30 Hz loop, so not described as real-time | — |
 | **DROID-SLAM** | — | checkpoint loads 0/0/0, **never executed**. Every SLAM number here is ORB-SLAM3 | unchanged |
 | **Segmentation** | REAL | checkpoint 0/0/0; sparse conv 1e-10 vs `nn.Conv3d`; 4.8× / 32.4× fewer SAM passes, four of five steps bitwise-identical. **No mIoU** — blocked on ground truth | — |
-| **6-DoF pose** | REAL | **Re-run on the rebuilt input, 2026-10-04: still refused.** Rotation 175.63° → 124.27°, but the top-16 hypotheses still scatter (1/16 within 15°) where mustard0 in the same job converges 16/16. Input quality was a real defect, not the binding one. The 2.08 cm self-consistency is **withdrawn** — 33.17 cm over a real baseline. Controls on mustard0 meshed **our way** clear the mesh recipe (v16b, 2.95°) **and the chair's 31° coverage** (v17, 4.79°, 16/16). **v18: FoundationPose leaves a pose that fits the depth far better** — on identical pixels our map pose fits the depth to 3.9 cm and its scorer still prefers a pose 74–166 cm off; one refinement call (5 iterations) from the map pose moves it 77 cm. Our inputs are not thereby cleared: the mask and mesh were built from depth-agreeing points, so the 3.9 cm is partly by construction. Chain stays position-only | replaces "never run" in RESULTS.md §nvdiffrast; the rebuild replaces "a denser fusion is the lever" in §2 |
+| **6-DoF pose** | REAL | **First accepted pose, 2026-10-05:** a book on `fr1/xyz` — 6/8 held-out frames, 15/16 hypotheses agree, depth residual 0.72 cm — through the hardened gate. Global registration lands within 3.4 cm on all five compact targets; the chair (113 cm, 124°) is specific to the chair. The target is SAM-defined: our segmentation proposes no compact object on that scene, so **the binding constraint has moved from pose to segmentation**. The scene graph stays position-only | replaces every earlier "FoundationPose fails on our input" reading; see `foundationpose_6dof/RESULTS.md` |
 | **Object dynamics** | REAL | **ties identity** on two episodes; the model never leaves its initialisation. "+26.2% vs constant velocity" was retracted by `world_model/RESULTS.md` as misleading | — |
 | **Object dynamics** | SIM | **+37.4% vs identity / +60.0% vs constant velocity** on 320 episodes. This is *not* evidence about real data and is never quoted as such | — |
 | **Candidate selection** | SIM | **headroom +0.0.** Perfect episode-depth selection 99.0% = policy alone 99.0%; a winner exists at 100% of decisions. The heuristic selector's 88.5% is *below* not selecting | replaces every earlier "the scorer ranks badly" reading — see W1, W2, W8, W11 |
@@ -443,26 +443,19 @@ Ordered by what unblocks the most, not by effort.
    recipe nor the coverage explains the chair's 124°. What remains is the chair case as a
    whole — object, sensor range, mask, and the trajectory its mesh is fused along
    (ORB-SLAM3 on a *dynamic* sequence, ATE 18.7 cm). `foundationpose_6dof/Plan.md`.
-4. **A compact target on TUM `fr1/xyz`.** v18: on identical pixels, our map pose fits the
-   measured depth to **3.9 cm**, and FoundationPose still leaves it — its scorer prefers
-   `register()`'s pose (134.28 vs 133.94) and one refinement call (5 internal iterations)
-   from the map pose moves it **77 cm**. That locates the *behaviour* in the estimator on
-   this input; it does **not** clear our inputs, because the mask and mesh were built from
-   depth-agreeing points and the 3.9 cm is partly by construction. *(Corrected 2026-10-05,
-   after review: the first write-up said "one step" and "inputs are adequate".)*
-   `fr1/xyz` has compact rigid desk objects and ORB-SLAM3 at 1.03 cm; the bundle there
-   should hold out validation frames that took no part in building the mesh.
-   **P1 (v19):** the 77 cm is divergence, not a wrong first step — one update from the map
-   pose improves the depth fit (3.77 → 2.46 cm), the second already fails. One update per
-   frame does not rescue it (gate 1/8). The chair's first step is ~20× mustard0's in
-   normalised units.
-   **P2 is blocked on segmentation.** On `fr1/xyz`, Mask3D proposes no compact desk object
-   at any threshold down to 0.2 — the small instances are fragments of monitor edges and
-   chairs; the cup, mouse, keyboard and books are never segmented. A compact target would
-   have to be defined another way (a SAM mask lifted with depth and the trajectory), which
-   tests FoundationPose on a compact object but not our segmentation.
-5. **Ground-truth instance labels** — unblocks mIoU, the MobileSAM trade, the `inside`
+4. ~~**A compact target on TUM `fr1/xyz`.**~~ **DONE, 2026-10-05 — first accepted pose.**
+   A book: 6/8 held-out frames, 15/16 hypotheses agree, depth residual 0.72 cm, through the
+   hardened gate (P0). Global registration lands within 3.4 cm on all five compact targets;
+   refusals are tracking loss and orientation agreement on a near-symmetric box. P1 showed
+   the chair's 77 cm is divergence that one update per frame does not fix. The target was
+   SAM-defined, because —
+5. **Segmentation is now the binding constraint.** On `fr1/xyz` Mask3D proposes no compact
+   desk object at any score down to 0.2; its small instances are fragments. Until it does,
+   an accepted pose has no scene-graph node to attach to. Candidate levers, none measured:
+   a finer fusion voxel near the support surface (2 cm leaves a 14 cm mouse ~7 voxels
+   across), or 2-D proposals (SAM) lifted with depth — which is what made the book work.
+6. **Ground-truth instance labels** — unblocks mIoU, the MobileSAM trade, the `inside`
    support test, and any statement about recognition. One resource, four gaps.
-6. **A CUDA box** — unblocks DROID-SLAM tracking and turns every MODELLED speedup into a
+7. **A CUDA box** — unblocks DROID-SLAM tracking and turns every MODELLED speedup into a
    measured one.
-7. **The loose ends in §5** — small, and none of them gate anything above.
+8. **The loose ends in §5** — small, and none of them gate anything above.

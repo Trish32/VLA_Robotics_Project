@@ -213,7 +213,15 @@ prefers its own pose, 74–166 cm off, and one refinement call (5 internal itera
 map pose moves it **77 cm**. That locates the behaviour in the estimator on this input. It does
 not clear our inputs: the mask and mesh were built from depth-agreeing points, so the map pose's
 3.9 cm is partly by construction — the comparison holds because both poses are scored on the
-same pixels. The gate now checks rendered depth against measured depth, which needs no map at all. The
+same pixels.
+
+**Then a compact object worked.** On `fr1/xyz`, a book defined by one SAM click — mesh fused
+from fusion frames only, the 8 bundle frames held out, masks from SAM per frame rather than
+from depth agreement — is **accepted** by the hardened gate: 6/8 frames, 15/16 hypotheses
+within 1.73°, depth residual 0.72 cm. Global registration lands within 3.4 cm on all five
+compact targets tried. The catch is upstream of the pose: our Mask3D proposes no compact
+object on that scene at any threshold, so the accepted pose has no scene-graph node to
+attach to. **The binding constraint has moved from pose to segmentation.** The gate now checks rendered depth against measured depth, which needs no map at all. The
 next target is a compact desk object on `fr1/xyz`.
 
 The 6-DoF path is nonetheless wired: `tools/e2e_pose.py` consumes the pose and calls

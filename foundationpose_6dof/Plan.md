@@ -410,3 +410,43 @@ absolute 1,500 px floor. That equated small with partial, and it would have refu
 14 cm mouse at its true size of ~1,200 px. It now requires ≥ 35% of the instance visible
 plus a 400 px minimum. The chair still passes.
 
+### Result (P2, v20b) — read against the rule above, which was not edited
+
+**Void checks.** The first v20 attempt voided every target: Kaggle's dataset upload silently
+drops subdirectories, so `targets/<name>/` never arrived. The files now ship flat; the rule
+was not touched (`fcf99ce`). In v20b every target's fingerprint matched in-job and the
+mustard0 CAD control passed (2.06 cm, 16/16). Valid.
+
+| target | `register()` on frame 0 vs map | top-16 within 15° | frames passing | median depth residual | gate | why refused |
+|---|---|---|---|---|---|---|
+| **book** | **3.36 cm, 1.55°** | **15/16** (1.73°) | **6/8** | **0.72 cm** | **ACCEPTED** | — |
+| box | 2.17 cm, 17.14° | 11/16 (20.62°) | 7/8 | 1.43 cm | refused | hypotheses scattered past 15° — a near-symmetric cuboid |
+| mouse | 2.10 cm, 15.06° | 14/16 (3.83°) | 2/8 | — | refused | tracking lost it: off the object from frame 3 |
+| deskobj | 1.57 cm, 1.40° | **1/16** (150°) | 1/8 | — | refused | orientation not identified, then tracking lost it |
+| *cup (not counted)* | *0.90 cm, 18.93°* | *4/16* | *4/8* | *2.68 cm* | *refused* | *drifted from frame 4* |
+| *chair, for scale* | *113.13 cm, 124.27°* | *1/16* | *0/8* | *143 cm* | *refused* | — |
+
+**One of the four counted targets is accepted. By the registered row:** FoundationPose works
+on a compact object with our trajectory and our mesh recipe, on real data, through the
+hardened gate — on frames held out from the mesh, with masks not built from depth agreement.
+**The chair's failure is specific to the chair.** This is the first 6-DoF pose this line has
+accepted.
+
+**What one in four does and does not say.** It is an existence result, not a rate. Every
+target's frame-0 `register()` lands within 3.4 cm of the map — two orders of magnitude from
+the chair's 113 cm — so global registration works on all of them. The three counted failures
+are of two other kinds:
+- **tracking** (mouse, deskobj): a good frame-0 pose, then `track_one` loses the object
+  within two or three frames. The mouse is 14 cm at 1.1 m and nearly textureless.
+- **orientation agreement** (box, deskobj): the gate requires the top hypotheses to agree
+  within 15°. A near-symmetric cuboid legitimately fails that — the box's pose fits the depth
+  to 1.4 cm on 7/8 frames and is refused on agreement alone.
+Neither is the chair's failure mode. Both are worth their own controls; neither is claimed
+as diagnosed here.
+
+**The accepted pose has nowhere to go yet.** The book is a SAM-defined target, so there is no
+scene-graph node to attach it to; the gate records it as `accepted_pose_world_unattached`.
+For the 6-DoF path to run end to end, our segmentation has to produce the compact instance.
+On `fr1/xyz` it does not — at any threshold. **The binding constraint on this line has moved
+from pose to segmentation.**
+

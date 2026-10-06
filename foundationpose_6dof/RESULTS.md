@@ -63,6 +63,28 @@ bundle took consecutive frames. A tracker that ignored its input entirely would 
 still across them, so the check had almost no leverage to begin with. The rebuilt bundle
 spans **20.8 cm**, and over it the spread is **33.17 cm** — the 2.08 cm is withdrawn.
 
+## Compact targets on real data — the first accepted pose · MEASURED (Kaggle T4, v20b)
+
+Rule committed in `53af6a4` before launch. Targets are SAM-defined, because our segmentation
+proposes no compact object on `fr1/xyz`. Each mesh is fused from the trajectory's fusion
+frames only; the 8 bundle frames are held out from it; masks are SAM per frame. Before the
+run, on those independent masks, the map pose fit the measured depth to 1.0–3.4 cm.
+
+| target | `register()` on frame 0 vs map | top-16 within 15° | frames passing | median depth residual | gate | why refused |
+|---|---|---|---|---|---|---|
+| **book** | **3.36 cm, 1.55°** | **15/16** (1.73°) | **6/8** | **0.72 cm** | **ACCEPTED** | — |
+| box | 2.17 cm, 17.14° | 11/16 (20.62°) | 7/8 | 1.43 cm | refused | hypotheses scattered past 15° — a near-symmetric cuboid |
+| mouse | 2.10 cm, 15.06° | 14/16 (3.83°) | 2/8 | — | refused | tracking lost it: off the object from frame 3 |
+| deskobj | 1.57 cm, 1.40° | **1/16** (150°) | 1/8 | — | refused | orientation not identified, then tracking lost it |
+| *cup (not counted)* | *0.90 cm, 18.93°* | *4/16* | *4/8* | *2.68 cm* | *refused* | *drifted from frame 4* |
+| *chair, for scale* | *113.13 cm, 124.27°* | *1/16* | *0/8* | *143 cm* | *refused* | — |
+
+**The book is accepted** — 6/8 frames, 15/16 hypotheses within 1.73°, depth residual
+0.72 cm. FoundationPose works on a compact object with our trajectory and our mesh recipe on
+real data; the chair's failure is specific to the chair. Global registration lands within
+3.4 cm on every target. The refusals are tracking loss (mouse, deskobj) and the gate's
+orientation-agreement check on a near-symmetric box. [Plan.md](Plan.md).
+
 ## Iteration trace: one refinement update at a time · MEASURED (Kaggle T4, v19)
 
 Rule committed in `8c1bf07` before launch. In-job convention check reproduces the local
