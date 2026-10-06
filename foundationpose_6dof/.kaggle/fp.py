@@ -17,7 +17,7 @@
 # load, which is the Fidelity Rule's first half and cannot be checked on the Mac.
 import os, subprocess, sys, torch, traceback
 
-KERNEL_VERSION = "v20-compact-targets"
+KERNEL_VERSION = "v20b-compact-targets-flat"
 
 # Stamped by tools/push_kaggle_pose.py at push time with the fingerprint of the bundle
 # it uploaded. The job then asserts that the dataset Kaggle actually mounted is that one.
@@ -47,7 +47,7 @@ RUN_MESH_CONTROL = False
 RUN_ITERATION_TRACE = False
 
 # Stamped by tools/push_kaggle_pose.py: {target name: bundle fingerprint} for every extra
-# bundle shipped under targets/<name>/ (SAM-defined compact objects, P2). Each is
+# bundle shipped as targets__<name>__* files (SAM-defined compact objects, P2). Each is
 # refused in-job if the mounted bundle does not carry the stamped fingerprint.
 EXPECTED_TARGETS = {}
 
@@ -520,8 +520,9 @@ except Exception:
 print(f"\n{'='*70}\n[compact targets: {sorted(EXPECTED_TARGETS)}]\n{'='*70}", flush=True)
 for T_name in sorted(EXPECTED_TARGETS):
     try:
-        Bt = f"{B}/targets/{T_name}"
-        mt = json.load(open(f"{Bt}/bundle.json"))
+        # Flat, prefixed files: Kaggle drops dataset subdirectories (dir_mode="skip").
+        Bt = f"{B}/targets__{T_name}__"
+        mt = json.load(open(f"{Bt}bundle.json"))
         got_t = mt.get("fingerprint")
         print(f"\n  [{T_name}] fingerprint {got_t}, expected {EXPECTED_TARGETS[T_name]}; "
               f"{mt.get('target_source')}", flush=True)
@@ -529,7 +530,7 @@ for T_name in sorted(EXPECTED_TARGETS):
             print(f"  [{T_name}] STALE INPUT -- skipped", flush=True)
             continue
         Kt = np.array(mt["K"], dtype=np.float64)
-        mesh_t = trimesh.load(f"{Bt}/mesh.obj", process=False)
+        mesh_t = trimesh.load(f"{Bt}mesh.obj", process=False)
         est_t = FoundationPose(
             model_pts=mesh_t.vertices.astype(np.float32),
             model_normals=mesh_t.vertex_normals.astype(np.float32),
@@ -537,10 +538,10 @@ for T_name in sorted(EXPECTED_TARGETS):
             glctx=dr.RasterizeCudaContext(), debug=0)
 
         def load_t(i):
-            r_ = cv2.cvtColor(cv2.imread(f"{Bt}/rgb_{i:03d}.png"), cv2.COLOR_BGR2RGB)
-            d_ = cv2.imread(f"{Bt}/depth_{i:03d}.png", cv2.IMREAD_ANYDEPTH).astype(np.float32) / mt["depth_scale"]
+            r_ = cv2.cvtColor(cv2.imread(f"{Bt}rgb_{i:03d}.png"), cv2.COLOR_BGR2RGB)
+            d_ = cv2.imread(f"{Bt}depth_{i:03d}.png", cv2.IMREAD_ANYDEPTH).astype(np.float32) / mt["depth_scale"]
             d_[(d_ < 0.1) | (d_ > 4.0)] = 0
-            m_ = cv2.imread(f"{Bt}/mask_{i:03d}.png", cv2.IMREAD_GRAYSCALE) > 0
+            m_ = cv2.imread(f"{Bt}mask_{i:03d}.png", cv2.IMREAD_GRAYSCALE) > 0
             return r_, d_, m_
 
         r0_, d0_, m0_ = load_t(0)

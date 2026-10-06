@@ -110,6 +110,18 @@ def target_bundles() -> dict[str, Path]:
     return out
 
 
+def target_manifest(targets: dict[str, Path]) -> dict:
+    """What the dataset must serve before a kernel may run on it.
+
+    Includes the LAYOUT, not only the fingerprints: the first v20 upload carried the same
+    fingerprints in a layout Kaggle silently dropped, so a fingerprint-only manifest would
+    read the broken version as current and reopen the [10] race.
+    """
+    return {"layout": "flat: targets__<name>__<file>",
+            "targets": {n: json.load(open(d / "bundle.json"))["fingerprint"]
+                        for n, d in sorted(targets.items())}}
+
+
 def wait_for_dataset(api, ref: str, fingerprint: str, minutes: float = 15.0,
                      manifest: dict | None = None) -> bool:
     """Block until Kaggle SERVES the bundle we just uploaded, not merely accepts it.
@@ -135,9 +147,15 @@ def wait_for_dataset(api, ref: str, fingerprint: str, minutes: float = 15.0,
         live, live_manifest = None, None
         if status == "ready":
             with tempfile.TemporaryDirectory() as tmp:
-                api.dataset_download_file(ref, "bundle.json", path=tmp, quiet=True)
-                if manifest is not None:
-                    api.dataset_download_file(ref, "targets.json", path=tmp, quiet=True)
+                # A file the NEW version adds is absent from the version still being
+                # served, and the API answers that with a 404 — which means "not yet",
+                # not "failed". The first v20 push died on exactly this.
+                try:
+                    api.dataset_download_file(ref, "bundle.json", path=tmp, quiet=True)
+                    if manifest is not None:
+                        api.dataset_download_file(ref, "targets.json", path=tmp, quiet=True)
+                except Exception as exc:
+                    status = f"ready, previous version still served ({type(exc).__name__})"
                 for z in Path(tmp).glob("*.zip"):
                     zipfile.ZipFile(z).extractall(tmp)
                 f = Path(tmp) / "bundle.json"
@@ -209,15 +227,15 @@ def main(argv=None) -> int:
                 shutil.copy2(BUNDLE / name, stage / name)
         targets = target_bundles()
         if targets:
+            # FLAT, prefixed names — not targets/<name>/. dataset_create_version defaults
+            # to dir_mode="skip" and silently drops subdirectories: the first v20 run found
+            # targets.json at the root and no target files at all.
             for name, d in targets.items():
-                dst = stage / "targets" / name
-                dst.mkdir(parents=True)
                 for f in d.iterdir():
-                    if f.name != "dataset-metadata.json" and f.is_file():
-                        shutil.copy2(f, dst / f.name)
-            (stage / "targets.json").write_text(json.dumps(
-                {n: json.load(open(d / "bundle.json"))["fingerprint"]
-                 for n, d in sorted(targets.items())}, sort_keys=True))
+                    if f.name not in ("dataset-metadata.json", "pose_result.json") and f.is_file():
+                        shutil.copy2(f, stage / f"targets__{name}__{f.name}")
+            (stage / "targets.json").write_text(json.dumps(target_manifest(targets),
+                                                           sort_keys=True))
             print(f"[push]  + {len(targets)} target bundles: {sorted(targets)}")
         (stage / "dataset-metadata.json").write_text(json.dumps(
             {"title": DATASET, "id": f"{username}/{DATASET}",
@@ -235,8 +253,7 @@ def main(argv=None) -> int:
         # serving the bundle on disk — otherwise the job mounts whatever was last ready.
         print(f"[push]  waiting for {username}/{DATASET} to serve {meta['fingerprint']}")
         targets = target_bundles()
-        manifest = ({n: json.load(open(d / "bundle.json"))["fingerprint"]
-                     for n, d in sorted(targets.items())} if targets else None)
+        manifest = target_manifest(targets) if targets else None
         if not wait_for_dataset(api, f"{username}/{DATASET}", meta["fingerprint"],
                                 manifest=manifest):
             print("[push]  the dataset never served this bundle; not pushing a kernel "
