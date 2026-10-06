@@ -56,6 +56,10 @@ def authenticated_api():
 
         api = KaggleApi()
         api.authenticate()
+        # authenticate() only reads local credentials; it succeeds on an EXPIRED OAuth token.
+        # One real read call proves the server still accepts them, before 20 MB are staged —
+        # v21's first push printed "authenticated" and then died on the upload with a 401.
+        api.kernels_list(mine=True, page_size=1)
         return api
     except Exception as exc:                       # the client prints its own setup help
         print(f"[push]  Kaggle authentication failed: {type(exc).__name__}\n"
