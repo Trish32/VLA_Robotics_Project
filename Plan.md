@@ -40,13 +40,52 @@ Two distinctions are load-bearing throughout and are never collapsed:
 | **Runtime signals** | SIM | nothing reaches AUC 0.65; change detectors **anti-aligned** with burst onset at 0.19–0.23. P12 **failed** — two triggers hit 1.32× — so the event-trigger clause is **open**, not closed | replaces "no trigger concentrates the signal" |
 | **P11–P15** | SIM | **a robustness check, not a pre-registration.** The claim was pushed before the registration, and every threshold came from data already in hand | audit in `sim/PREREGISTERED.md` |
 | **P16–P21** | SIM | **registered, not run.** The `piv*.json` sets were lost with the scratchpad, so running them now means regenerating seeds 0–2 first | — |
-| **VLA task success** | — | **does not exist.** GR00T emits 16 × 29 DoF in 3.0 s CPU; no task-success benchmark has been run on any task | — |
+| **VLA task success** | SIM | **Experimental official-GR1 task baseline measured on T4/fp16:** execute 8 scores **30% by 720 / 60% by 1,440 steps**; execute 4 scores 0% / 40%, so retain execute 8. All **46/46** captured decisions replay exactly on CUDA; **184** alternatives are saved, with quality unevaluated. Cold simulator replay passes the real two-step local smoke; the six-seed cloud gate awaits submission authorization. Official attention fidelity and published-metric reproduction remain unverified | `grootN1_Robotics/STRATEGY.md`, `grootN1_Robotics/BRANCH_REPLAY.md` |
 
-**What this implies for sequencing, and it is not what §6 below says.** The simulator
+**What this implies for sequencing.** The simulator
 result is "selection cannot help *in an arena where the policy already scores 99%*",
-which is a statement about a saturated task. The measurement that would tell us what to
-fix next — a real VLA task-success baseline — has never been taken. §6 was written
-before that was clear and is ordered around the pose question alone.
+which is a statement about a saturated scripted task. The released GR00T now has an
+experimental baseline on its official GR1 task, so the strategy track can proceed to
+faithful simulator branching and candidate outcomes. §6 remains ordered around the
+perception pose question; it is not the strategy track's sequence. Neither diagnostic
+baseline establishes official numerical fidelity or a published-metric reproduction.
+
+
+### Segmentation for compact objects — evaluation rule, committed before any variant is run
+
+**Why.** P2 accepted a 6-DoF pose for a book, but the book was a SAM click: on `fr1/xyz` our
+Mask3D proposes no compact object at any score down to 0.2, so the pose has no scene-graph
+node. Segmentation is now the binding constraint on this line.
+
+**What counts as "found".** No ground-truth labels exist, but five compact objects are
+defined independently, each by one click: `book`, `box`, `mouse`, `deskobj`, `cup`
+(`pipeline/assets/e2e_fr1/pose_bundle_*`, mesh surface in world coordinates). A
+segmentation instance **finds** a target if the two point sets cover each other within
+**2 cm** (the fusion voxel scale) at **F1 ≥ 0.5**:
+- precision = share of the instance's points within 2 cm of the target surface;
+- recall = share of the target's surface within 2 cm of the instance.
+Each target counts once, against its best-matching instance.
+
+**Reported for every variant, not only the best:**
+- targets found, out of 5;
+- the number of instances;
+- the number of instances with longest extent ≤ 30 cm.
+The last of these exposes fragment spam — a segmentation can "find" everything by
+splitting the scene into crumbs.
+
+**Variants, in the order they will run:**
+- **L1:** the same Mask3D on a finer cloud. Fusion bounds are currently the camera track
+  ± a 4 m depth horizon, capped at 512 voxels, which works out to ~1.6 cm. A 2 m horizon
+  suits a desk scene. Mask3D's own voxel stays at 2 cm, where it was trained.
+- **L2:** 2-D proposals lifted to 3-D — SAM automatic masks on keyframes, lifted with depth
+  and the ORB-SLAM3 trajectory, merged across views, written as `instance_masks.npz` so
+  every downstream stage is unchanged.
+
+**Stated now:** L2 uses the same SAM model that defined the targets, so its matches are
+partly by construction. Its real claims are that it needs no clicks, and that what it finds
+supports a pose. **The end-to-end bar is this:** an instance from our segmentation, through
+`build_pose_bundle.py` → T4 → the hardened gate, is accepted and **attached to its
+scene-graph node**. Matching the targets is necessary for that bar, not sufficient.
 
 ---
 
