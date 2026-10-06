@@ -17,7 +17,7 @@
 # load, which is the Fidelity Rule's first half and cannot be checked on the Mac.
 import os, subprocess, sys, torch, traceback
 
-KERNEL_VERSION = "v20b-compact-targets-flat"
+KERNEL_VERSION = "v21-segmented-targets"
 
 # Stamped by tools/push_kaggle_pose.py at push time with the fingerprint of the bundle
 # it uploaded. The job then asserts that the dataset Kaggle actually mounted is that one.

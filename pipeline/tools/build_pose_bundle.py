@@ -293,6 +293,8 @@ def main() -> int:
     ap.add_argument("--scan-stride", type=int, default=1,
                     help="scan every Nth frame when ranking visibility; the scan reads "
                          "depth only, so 1 is affordable on an 859-frame sequence")
+    ap.add_argument("--out", type=Path, default=None,
+                    help="bundle directory; defaults to <E2E_DIR>/pose_bundle")
     ap.add_argument("--mask-source", choices=["depth", "sam"], default="depth",
                     help="depth: the depth-verified dense fill (default, unchanged). sam: SAM "
                          "on each bundle frame, prompted by the box of the projected points — "
@@ -302,6 +304,9 @@ def main() -> int:
                     help="fall back to the old splat+close mask instead of the "
                          "depth-verified dense fill, for A/B against a recorded run")
     args = ap.parse_args()
+    global OUT
+    if args.out is not None:
+        OUT = args.out
 
     import cv2
     import open3d as o3d
@@ -312,7 +317,10 @@ def main() -> int:
     from pipeline.transforms import quaternion_to_matrix
 
     fuse = json.load(open(E2E / "fuse.json"))
-    ground = json.load(open(E2E / "ground.json"))
+    # ground.json names the grounded target; with --target it is not needed, and a scene
+    # whose targets come from the segmentation directly may not have been grounded yet.
+    ground_f = E2E / "ground.json"
+    ground = json.load(open(ground_f)) if ground_f.exists() else {}
     labelled = json.load(open(E2E / "labelled.json"))["instances"]
     masks = np.load(E2E / "instance_masks.npz")["masks"]
 
@@ -334,7 +342,9 @@ def main() -> int:
         [np.flatnonzero(masks[i]) for i in keep], points,
         [labelled[i]["label"] for i in keep], [labelled[i]["similarity"] for i in keep],
         anchor_frame=Frames.keyframe(0), stamp_ns=10**9, registry=InstanceRegistry())
-    target = args.target or ground["target"]
+    target = args.target or ground.get("target")
+    if target is None:
+        raise SystemExit("no --target and no ground.json to read one from")
     # An instance can have MORE than one proposal: `InstanceRegistry.associate` merges
     # overlapping ones under a single id (on the TUM run two desk proposals at IoU 0.498
     # became one `desk_1`). Taking `next(...)` kept the first and silently dropped the

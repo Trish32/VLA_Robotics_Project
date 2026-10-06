@@ -87,6 +87,64 @@ supports a pose. **The end-to-end bar is this:** an instance from our segmentati
 `build_pose_bundle.py` → T4 → the hardened gate, is accepted and **attached to its
 scene-graph node**. Matching the targets is necessary for that bar, not sufficient.
 
+
+#### Results — every variant run, against the rule above (not edited)
+
+| variant | instances | ≤ 30 cm | book | box | cup | deskobj | mouse | found |
+|---|---|---|---|---|---|---|---|---|
+| Mask3D, score ≥ 0.5 (current) | 7 | 2 | 0.01 | 0.08 | 0.13 | 0.22 | 0.01 | **0/5** |
+| Mask3D, score ≥ 0.2 | 35 | 3 | 0.10 | 0.11 | 0.13 | 0.22 | 0.04 | **0/5** |
+| **L1** — Mask3D on a 2 m / 3.5 mm-spacing fusion | 29 | 1 | 0.04 | 0.04 | 0.09 | 0.29 | 0.05 | **0/5** |
+| **L2** — SAM proposals lifted, 8 keyframes | 48 | 29 | 0.30 | **0.52** | **0.63** | **0.66** | 0.03 | **3/5** |
+| **L2b** — the same, 16 keyframes | 79 | 42 | 0.29 | **0.59** | **0.71** | **0.65** | 0.10 | **3/5** |
+
+*(Cells are F1 against the best-matching instance.)*
+
+**Mask3D does not segment compact objects here, and finer input does not change that.**
+Its best match for every target is a 0.5–1.9 m instance with high recall and precision
+0.01–0.20: the object is swallowed by whatever it sits on. L1 halved the point spacing and
+the result did not move.
+
+**Lifted 2-D proposals find three of five.** Their instances are 12–26 cm — the objects
+themselves, not regions containing them. Doubling the keyframes raised F1 on the targets
+already found and did not find a new one, so tuning stopped there: going further would
+mean fitting these five targets.
+
+**Not found, and why (diagnosed, not fixed):**
+- the **mouse** is ≥ 30% visible in only 2 of the 8 keyframes, at the edge of the
+  two-view minimum;
+- the **book** is captured in part (precision 0.4, recall 0.2).
+
+**Chosen for the end-to-end test: L2.** It finds as many targets as L2b with 40% fewer
+instances. The tie-break — fewer instances, i.e. less fragmentation — was fixed before the
+end-to-end run.
+
+
+#### End to end (v21) — decision rule, committed before launch
+
+**What goes in.** The three compact instances that **our** segmentation (L2) found:
+`box_1`, `cup_9` and `chair_8` (the deskobj). Their scene-graph ids and labels come from
+our CLIP stage. Bundles are built with the standard `build_pose_bundle.py`, plus two
+options:
+- frames held out from fusion (`--exclude-fused-stride 10`);
+- SAM masks per frame (`--mask-source sam`).
+
+The mesh is the pipeline's own: Poisson on the instance's points (95–180 of them, from the
+7.9 mm fusion). That is **sparser than P2's matched-resolution refusion, and deliberately
+so** — this tests the pipeline as it stands. The cup's handle is visible, so its
+orientation is defined and it counts.
+
+**The bar, registered earlier.** An instance is accepted by the hardened stage-4 gate
+**and attached to its scene-graph node** (`refine_with_pose` succeeds).
+
+| attached, of 3 | reading | next |
+|---|---|---|
+| **≥ 1** | the perception line produces a 6-DoF, graph-attached pose from its own segmentation — the first end-to-end | the recognition gain and the two misses (mouse, book) |
+| **0** | segmentation finds the objects, but the pipeline's own sparse instance mesh cannot support a pose | use P2's matched-resolution refusion as the pipeline's mesh source |
+
+**Void:** a target whose fingerprint does not match in-job; or the whole run, if the
+mustard0 CAD control fails.
+
 ---
 
 ## 1. Blocked on a resource, not on effort
