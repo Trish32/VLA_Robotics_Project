@@ -28,9 +28,26 @@ noise/action/post-call-RNG replays, **184** saved alternative predictions, uncha
 local analysis verifies every artifact/label and 6,333 video frames. Cloud tests
 pass 76 (2 skipped); the source bundle passes 75 locally (3 skipped).
 
-Next validate faithful simulator branch replay and evaluate candidate outcomes
-from the same environment state before selecting a policy rule. Prediction variation
-alone does not establish selection headroom. The same-input CUDA numerical oracle
+The [cold simulator branch oracle](BRANCH_REPLAY.md) now passes a real two-step
+CPU pause/continuation smoke, independent saved-artifact analysis and 62 selected
+regression tests (1 skipped); the source-only cloud bundle passes 93 (3 skipped).
+The full cloud gate completed as private `trishli/gr00t-gr1-cold-branch-replay`
+version 1 (kernel 137266247). On 2026-10-06, cloud and independent local analysis
+both verify **six seeds / 46 inputs / 6,333 exact control frames**. Cloud tests pass
+94 (2 skipped). Server privacy, capture mount and reviewed script hash match.
+
+The [candidate outcome pilot](CANDIDATE_OUTCOMES.md) fixes six decisions and 30 arms,
+each with one saved action intervention followed by the real closed-loop policy.
+The worst-case budget is 40,887 simulator steps, including prefixes. Local real
+two-arm smoke, independent six-frame audit and source-bundle tests (111 passed,
+3 skipped) are complete. Following explicit user authorization on 2026-10-07,
+private `trishli/gr00t-gr1-candidate-outcomes` version 1 (kernel 137527779) was
+submitted and is RUNNING. Server privacy, expected input mounts and the reviewed
+script hash match. No candidate task outcome is measured yet.
+
+Next run those candidate outcomes from the same environment history before
+selecting a policy rule. Prediction variation alone does not establish selection
+headroom. The same-input CUDA numerical oracle
 on sm_80+ remains an independent fidelity gate.
 
 ## Free-GPU fine-tune — **freezing the VLM is not enough**

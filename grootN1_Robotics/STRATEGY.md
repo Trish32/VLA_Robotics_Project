@@ -115,8 +115,19 @@ episodes are an initial diagnostic, not a strong success-rate estimate.
 5. [Lossless decision capture and exact replay](DECISION_CAPTURE.md): complete,
    **46/46** exact CUDA replays and **184** saved alternatives; all 792 reference
    decisions stay unchanged. Independent local verification checks the complete
-   artifacts, labels and 6,333 video frames. Next validate simulator branch replay
-   and evaluate candidate quality; prediction variation alone is not headroom.
+   artifacts, labels and 6,333 video frames. [Cold simulator branch replay](BRANCH_REPLAY.md)
+   now passes the full six-seed cloud gate: **46 inputs / 6,333 exact control
+   frames**, independently reverified locally on 2026-10-06. Cloud tests pass
+   **94, 2 skipped**. Private `trishli/gr00t-gr1-cold-branch-replay` v1 is complete;
+   server privacy, capture mount and reviewed source hash are verified.
+   The [candidate outcome pilot](CANDIDATE_OUTCOMES.md) is now RUNNING: six fixed
+   decisions, reference plus four saved alternatives, and real closed-loop
+   continuation within the same 1,440-step deadline. Real two-arm CPU smoke and
+   independent artifact audit pass; the exact upload bundle passes 111 tests
+   (3 skipped). Following explicit user authorization on 2026-10-07, private
+   `trishli/gr00t-gr1-candidate-outcomes` version 1 was submitted; server privacy,
+   expected input mounts and the reviewed script hash match.
+   No candidate task outcome is measured; prediction variation alone is not headroom.
    Where headroom exists, compare planning with the same seeds, budget, horizon
    and checkpoint.
 6. Fine-tune only after a measurable baseline; use `ResumableTrainer` and the

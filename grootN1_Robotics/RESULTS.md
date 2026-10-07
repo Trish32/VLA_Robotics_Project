@@ -6,6 +6,47 @@ What is verified. The checkpoint loads **0 missing / 0 unexpected / 0 shape-mism
 **Not a reproduction:** no published metric has been reproduced — that needs LIBERO or
 SimplerEnv. See [Plan.md](Plan.md).
 
+## Candidate outcomes — local gate passed, cloud running, 2026-10-07
+
+A real official two-step CPU smoke executes the captured reference and one saved
+alternative in separate fresh environments. The reference reproduces the existing
+oracle exactly; independent analysis verifies both interventions, signals and
+six video frames. This is execution correctness, not evidence of candidate quality.
+Reactive replanning, absolute budgets, mid-chunk stopping, paired isolated policy
+RNG and corruption rejection are covered by 18 new tests. The selected branch and
+candidate suites pass 36 tests; the actual source-only cloud bundle passes
+**111, 3 skipped**, including tiny network forward/backward regressions.
+
+The fixed pilot uses six decisions and 30 arms, each with a single saved action
+chunk followed by real GR00T closed-loop continuation. Its worst case is 40,887
+simulator steps, including repeated prefixes. After explicit user authorization,
+private Kaggle job `trishli/gr00t-gr1-candidate-outcomes` version 1 (kernel 137527779)
+was submitted and is RUNNING. Server privacy, GPU setting, both expected private
+input mounts and the reviewed script hash match. **No candidate task-success or
+selection gain is measured yet.** See
+[CANDIDATE_OUTCOMES.md](CANDIDATE_OUTCOMES.md).
+
+## Cold simulator branch oracle — full gate verified, 2026-10-06
+
+The official GR1 two-step CPU control is replayed continuously and in a fresh
+environment paused after step 1. All three step traces match exactly: full RGB/state/
+language observations, 1,209 native MuJoCo integration-state entries, original task
+signals, rewards and stop flags. Independent saved-artifact analysis verifies the
+trace hashes and original captured input. Selected regressions pass **62, 1 skipped**;
+the source-only cloud bundle passes **93, 3 skipped**.
+
+The full cloud gate has completed as private `trishli/gr00t-gr1-cold-branch-replay`
+version 1 (kernel 137266247). All **six seeds / 46 inputs / 6,333 control frames**
+pass. Each seed is replayed continuously and in a second fresh environment paused
+at captured decisions; full observations, native integration hashes, task signals,
+rewards and stopping flags match exactly between those replays. Original captures,
+task signals and stopping outcomes also match. Original native state was not saved
+and is compared only between the two new replays. Cloud tests pass **94, 2 skipped**.
+Cloud independent analysis and a separate local audit of the downloaded artifacts
+both pass. Server privacy, capture mount and reviewed script hash match.
+No candidate-quality or task-success gain is claimed. Registered rule, implementation
+and limitations: [BRANCH_REPLAY.md](BRANCH_REPLAY.md).
+
 ## Active strategy baseline — 2026-10-04
 
 The actual released checkpoint drives the pinned official GR1

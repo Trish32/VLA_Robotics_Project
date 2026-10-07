@@ -18,6 +18,18 @@ current setting**. [Lossless decision capture](DECISION_CAPTURE.md) now verifies
 trajectories. Next evaluate candidate quality through faithful simulator branching.
 Published-metric and flash-vs-SDPA fidelity remain unverified.
 
+The [cold simulator branch oracle](BRANCH_REPLAY.md) has completed its full private
+cloud gate: **six seeds / 46 inputs / 6,333 exact control frames**, independently
+reverified locally on 2026-10-06. Candidate outcomes and selection headroom remain
+unmeasured.
+
+The [candidate outcome pilot](CANDIDATE_OUTCOMES.md) is RUNNING with six fixed
+decisions and 30 arms, using real closed-loop continuations. Its real CPU smoke
+and independent audit pass; the upload bundle passes 111 tests (3 skipped).
+The private Kaggle version 1 was submitted after explicit user authorization on
+2026-10-07; server privacy, input mounts and reviewed script hash match.
+No candidate outcome is measured yet.
+
 ## Architecture
 
 Two towers joined by cross-attention:

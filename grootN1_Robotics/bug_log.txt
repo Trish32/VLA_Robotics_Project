@@ -372,3 +372,18 @@ Before/after: V1: 1 failed / 74 passed / 2 skipped, no policy results collected.
              V2: 76 passed / 2 skipped on CUDA, including noise/post-call RNG exact
              replay and second-GPU RNG preservation. CPU cold-start ordering test
              also passes. This is cloud-verified initialization, not a task metric.
+
+[17] New Kaggle kernel title resolved to a different slug than the requested ID
+----------------------------------------------------------------------------
+Date:        2026-10-05
+Fingerprint: Push warns "kernel title does not resolve to the specified id";
+             requested gr00t-gr1-branch-replay, returned gr00t-gr1-cold-branch-replay.
+Cause:       New-kernel slug resolution used the title "GR00T GR1 cold branch replay";
+             the staged ID omitted "cold". Later queries using that ID would target
+             a different resource from the accepted submission.
+Fix:         Align the staging ID with the returned canonical ref, allow that exact
+             slug in the dedicated-job guard, and make future title/ID consistent.
+Before/after: Requested ID differs from returned ref -> actual ref is queried;
+             server confirms version 1 RUNNING, private=true, GPU enabled, expected
+             private capture source and identical reviewed script SHA256. One job
+             was created; no duplicate submission. No policy metric changes.

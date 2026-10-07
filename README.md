@@ -126,7 +126,7 @@ over ZMQ from the ROS2 bridge.
 | **Perception stack** — SLAM → graph → VLA | **runs end to end**, stages 1–6 | ORB-SLAM3 ATE 1.03 cm reproduced |
 | **OpenMask3D** — sparse conv + Mask3D | **0/0/0**, 1e-10 vs `nn.Conv3d` | mIoU / open-vocab recall — needs ScanNet200 GT |
 | **FoundationPose** | **0/0/0**; correct pose on upstream `demo_data/mustard0` (**2.06 cm**) | pose on OUR mesh **refused** by the stage-4 gate (175.63°) — the input is the limit, not the port |
-| GR00T N1.6-3B | checkpoint loads 0/0/0 (3.29 B params) | LIBERO / SimplerEnv success rate |
+| GR00T N1.6-3B | experimental GR1 baseline, exact decision replay and verified simulator reconstruction; [strategy status](grootN1_Robotics/STRATEGY.md) | candidate outcomes; official fidelity / published metric |
 | DexVLA | ScaleDP-H Stage-1 head loads 0-unexpected | **Stage 1 only, real-robot eval** — controlled baseline, not a reproduction |
 | DROID-SLAM | `droid.pth` loads 0/0/0 | **never executed** — `lietorch`/`droid_backends` are CUDA-compile-only |
 | ROS2 bridge | wire format byte-identical to upstream | live in a ROS2 Jazzy graph ✓ |

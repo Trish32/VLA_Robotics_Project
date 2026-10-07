@@ -215,7 +215,7 @@ def verify_source_bundle(code):
         environment = dict(os.environ, PYTHONPATH=str(root) + ":" + str(root / "grootN1_Robotics/upstream"),
                            NO_ALBUMENTATIONS_UPDATE="1")
         subprocess.run([sys.executable, "-m", "pytest",
-                        *[root / "grootN1_Robotics/tests" / name for name in TESTS], "-q", "--tb=short"],
+                        *[root / "grootN1_Robotics/tests" / name for name in namespace["TEST_NAMES"]], "-q", "--tb=short"],
                        cwd=root, env=environment, check=True)
 
 
